@@ -433,6 +433,9 @@ pub struct BaseDocument {
     /// Navigation provider. Can be used to navigate to a new page (bubbles up the event
     /// on e.g. clicking a Link)
     pub navigation_provider: Arc<dyn NavigationProvider>,
+    /// The top-level document's navigation provider, in an `<iframe>`'s document. See
+    /// [`DocumentConfig::top_navigation_provider`].
+    pub top_navigation_provider: Option<Arc<dyn NavigationProvider>>,
     /// Shell provider. Can be used to request a redraw or set the cursor icon
     pub shell_provider: Arc<dyn ShellProvider>,
     /// HTML parser provider. Used to parse HTML for setInnerHTML
@@ -581,6 +584,7 @@ impl BaseDocument {
             controls_to_form: HashMap::new(),
             net_provider,
             navigation_provider,
+            top_navigation_provider: config.top_navigation_provider,
             shell_provider,
             html_parser_provider,
             abort_signal: config.abort_signal,
