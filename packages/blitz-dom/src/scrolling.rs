@@ -808,7 +808,10 @@ impl BaseDocument {
                 }
                 // Stop at the end of the content, where nothing moves.
                 let mut events = Vec::new();
-                let moved = self.scroll_chain_by(target, dx, dy, &mut |e| events.push(e));
+                // A step of nothing, a frame in the same millisecond as the last, moves
+                // nothing and says nothing about the end of the content.
+                let moved = (dx == 0.0 && dy == 0.0)
+                    || self.scroll_chain_by(target, dx, dy, &mut |e| events.push(e));
                 for event in events {
                     self.push_pending_event(event);
                 }
