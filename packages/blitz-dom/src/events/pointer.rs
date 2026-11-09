@@ -20,7 +20,7 @@ use taffy::AbsoluteAxis;
 use crate::{
     BaseDocument,
     node::{ScrollbarRef, SpecialElementData},
-    scrolling::{FlingState, ScrollAnimationState},
+    scrolling::{FlingState, ScrollAnimationState, WheelState},
 };
 
 use super::focus::generate_focus_events;
@@ -842,8 +842,30 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     mut dispatch_event: F,
 ) {
     let (scroll_x, scroll_y) = match event.delta {
-        // A wheel notch: about what browsers scroll (20px was too slow to use).
-        BlitzWheelDelta::Lines(x, y) => (x * 60.0, y * 60.0),
+        // A mouse wheel's notches glide; a touchpad's pixels already do.
+        BlitzWheelDelta::Lines(x, y) => {
+            let anchor = doc.get_hover_node_id();
+            // A wheel notch: about what browsers scroll (20px was too slow to use).
+            let (x, y) = (x * 60.0, y * 60.0);
+            // More notches while one glides add to it; the other way drops what is left.
+            let (left_x, left_y) = match &doc.scroll_animation {
+                ScrollAnimationState::Wheel(w) if w.target == anchor => (w.x, w.y),
+                _ => (0.0, 0.0),
+            };
+            let keep = |left: f64, new: f64| if left * new < 0.0 { 0.0 } else { left };
+            let last_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64 as f64;
+            doc.scroll_animation = ScrollAnimationState::Wheel(WheelState {
+                target: anchor,
+                x: keep(left_x, x) + x,
+                y: keep(left_y, y) + y,
+                last_time,
+            });
+            doc.shell_provider.request_redraw();
+            return;
+        }
         BlitzWheelDelta::Pixels(x, y) => (x, y),
     };
 
