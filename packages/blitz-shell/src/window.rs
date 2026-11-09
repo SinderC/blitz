@@ -638,6 +638,9 @@ impl<Rend: WindowRenderer> View<Rend> {
                 let color_scheme = theme_to_color_scheme(self.theme_override.unwrap_or(theme));
                 let mut inner = self.doc.inner_mut();
                 inner.viewport_mut().color_scheme = color_scheme;
+                drop(inner);
+                // Restyled with the new scheme now, not at the next input event.
+                self.request_redraw();
             }
             WindowEvent::Ime(ime_event) => {
                 self.doc.handle_ui_event(UiEvent::Ime(winit_ime_to_blitz(ime_event)));
