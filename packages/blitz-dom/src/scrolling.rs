@@ -593,6 +593,31 @@ impl BaseDocument {
         self.scroll_programmatically(node_id, ScrollAmount::To(Point { x, y }), behavior);
     }
 
+    /// The viewport's scroll offset and the largest offset it can reach, in CSS pixels:
+    /// for a page, what `scrollX`/`scrollY` and `scrollWidth`/`scrollHeight` less the
+    /// client size give.
+    pub fn viewport_scroll_range(&self) -> (Point<f64>, Point<f64>) {
+        let (current, _, max) = self.scroll_state(ScrollTarget::Viewport, false);
+        (current, max)
+    }
+
+    /// Scroll the viewport to the given absolute offset in CSS pixels, clamped to its
+    /// range, as `window.scrollTo` does.
+    pub fn scroll_viewport_to(&mut self, x: f64, y: f64, behavior: ScrollBehavior) {
+        self.scroll(
+            ScrollRequest {
+                target: ScrollTarget::Viewport,
+                amount: ScrollAmount::To(Point { x, y }),
+                overflow: ScrollOverflow::Clamp,
+                source: ScrollSource::Programmatic,
+                behavior,
+                interrupt_animation: true,
+            },
+            &mut |_| {},
+        );
+        self.shell_provider.request_redraw();
+    }
+
     /// Scroll an element by the given relative offset in CSS pixels.
     pub fn scroll_by(&mut self, node_id: NodeId, x: f64, y: f64, behavior: ScrollBehavior) {
         self.scroll_programmatically(node_id, ScrollAmount::By(Point { x, y }), behavior);
