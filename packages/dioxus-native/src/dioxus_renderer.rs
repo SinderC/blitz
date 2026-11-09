@@ -91,6 +91,12 @@ impl DioxusNativeWindowRenderer {
                 if let Some(limits) = options.limits {
                     inner_options = inner_options.limits(limits);
                 }
+                // Without the glyph atlas, Vello GPU draws color bitmap glyphs (emoji) as
+                // pixmap paints, which it doesn't support and panics on.
+                #[cfg(all(feature = "vello-hybrid", not(feature = "vello")))]
+                {
+                    inner_options = inner_options.glyph_caching(true);
+                }
                 let inner_renderer = InnerRenderer::with_options(inner_options);
             } else {
                 let inner_renderer = InnerRenderer::with_options(config);
