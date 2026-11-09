@@ -844,9 +844,10 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     let (scroll_x, scroll_y) = match event.delta {
         // A mouse wheel's notches glide; a touchpad's pixels already do.
         BlitzWheelDelta::Lines(x, y) => {
-            let anchor = doc.get_hover_node_id();
             // A wheel notch: about what browsers scroll (20px was too slow to use).
             let (x, y) = (x * 60.0, y * 60.0);
+            let hovered = doc.get_hover_node_id();
+            let anchor = doc.wheel_scroller(hovered, x, y);
             // More notches while one glides add to it; the other way drops what is left.
             let (left_x, left_y) = match &doc.scroll_animation {
                 ScrollAnimationState::Wheel(w) if w.target == anchor => (w.x, w.y),

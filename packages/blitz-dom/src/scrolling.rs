@@ -284,6 +284,26 @@ impl BaseDocument {
         }
     }
 
+    /// The nearest node from `anchor` up that can scroll the way a wheel turn goes, or
+    /// `None` for the viewport. A glide anchors on this rather than on the node under the
+    /// pointer, which a list that re-renders as it scrolls removes or reuses.
+    pub(crate) fn wheel_scroller(&self, anchor: Option<NodeId>, x: f64, y: f64) -> Option<NodeId> {
+        let mut next = anchor;
+        while let Some(id) = next {
+            let node = self.nodes.get(id)?;
+            let (current, min, max) = self.scroll_state(ScrollTarget::Node(id), false);
+            // Wheel deltas are the opposite of offsets: positive scrolls toward the start.
+            let room = |delta: f64, current: f64, min: f64, max: f64| {
+                (delta > 0.0 && current > min) || (delta < 0.0 && current < max)
+            };
+            if room(x, current.x, min.x, max.x) || room(y, current.y, min.y, max.y) {
+                return Some(id);
+            }
+            next = node.parent;
+        }
+        None
+    }
+
     /// Resolve a scroll target to the scroller which actually moves: the root element scrolls
     /// the viewport, per the CSS overflow propagation rules.
     fn canonical_scroll_target(&self, target: ScrollTarget) -> ScrollTarget {
@@ -782,6 +802,10 @@ impl BaseDocument {
                 wheel.y -= dy;
                 wheel.last_time = time_ms;
                 let target = wheel.target;
+                if target.is_some_and(|id| self.nodes.get(id).is_none()) {
+                    self.scroll_animation = ScrollAnimationState::None;
+                    return;
+                }
                 // Stop at the end of the content, where nothing moves.
                 let mut events = Vec::new();
                 let moved = self.scroll_chain_by(target, dx, dy, &mut |e| events.push(e));
