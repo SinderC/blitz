@@ -483,6 +483,13 @@ impl BaseDocument {
             .map(|mut font_ctx| {
                 font_ctx.source_cache.make_shared();
                 // font_ctx.collection.make_shared();
+                // List markers are drawn with this font, whatever fonts the embedder gives.
+                // An iframe's context is a copy of its parent's, which has it already.
+                if font_ctx.collection.family_by_name("Bullet").is_none() {
+                    font_ctx
+                        .collection
+                        .register_fonts(Blob::new(Arc::new(crate::BULLET_FONT) as _), None);
+                }
                 font_ctx
             })
             .unwrap_or_else(|| {
