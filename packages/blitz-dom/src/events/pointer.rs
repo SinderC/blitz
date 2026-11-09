@@ -842,7 +842,8 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     mut dispatch_event: F,
 ) {
     let (scroll_x, scroll_y) = match event.delta {
-        BlitzWheelDelta::Lines(x, y) => (x * 20.0, y * 20.0),
+        // A wheel notch: about what browsers scroll (20px was too slow to use).
+        BlitzWheelDelta::Lines(x, y) => (x * 60.0, y * 60.0),
         BlitzWheelDelta::Pixels(x, y) => (x, y),
     };
 
