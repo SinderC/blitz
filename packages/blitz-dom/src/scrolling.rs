@@ -103,10 +103,24 @@ pub(crate) struct ScrollToState {
     pub(crate) duration: f64,
 }
 
+/// Wheel notches still to scroll, eased out over the next frames instead of jumping.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WheelState {
+    /// The node under the pointer when the wheel turned; the scroll chains up from it.
+    pub(crate) target: Option<NodeId>,
+    /// What is left to scroll, in the units `scroll_chain_by` takes.
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    /// Time (in milliseconds since the Unix epoch) of the last step.
+    pub(crate) last_time: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ScrollAnimationState {
     None,
     Fling(FlingState),
+    /// Mouse-wheel scrolling, eased.
+    Wheel(WheelState),
     /// A smooth scroll of the viewport towards a target offset.
     ScrollTo(ScrollToState),
 }
@@ -431,6 +445,10 @@ impl BaseDocument {
     /// Duration (in milliseconds) of an animated scroll.
     const SMOOTH_SCROLL_DURATION_MS: f64 = 300.0;
 
+    /// Time constant of a wheel scroll's ease-out, in milliseconds: it covers about 90% of
+    /// a notch in twice this.
+    const WHEEL_EASE_MS: f64 = 70.0;
+
     /// Returns the current, minimum and maximum scroll offsets for the given
     /// scroll target. `include_hidden` controls whether
     /// `overflow: hidden` axes count as scrollable (they do for programmatic scrolls,
@@ -741,6 +759,32 @@ impl BaseDocument {
 
                 self.scroll_chain_by(Some(fling_state.target), dx, dy, &mut |_| {});
                 if fling_state.x_velocity.abs() < 0.1 && fling_state.y_velocity.abs() < 0.1 {
+                    self.scroll_animation = ScrollAnimationState::None;
+                }
+            }
+            ScrollAnimationState::Wheel(wheel) => {
+                let time_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64 as f64;
+                // Exponential ease-out: each frame covers a share of what is left that
+                // depends on the frame's length, so the glide takes as long at 30 fps as
+                // at 144.
+                let share =
+                    1.0 - (-(time_ms - wheel.last_time).max(0.0) / Self::WHEEL_EASE_MS).exp();
+                let finished = wheel.x.abs() < 0.5 && wheel.y.abs() < 0.5;
+                let (dx, dy) = if finished {
+                    (wheel.x, wheel.y)
+                } else {
+                    (wheel.x * share, wheel.y * share)
+                };
+                wheel.x -= dx;
+                wheel.y -= dy;
+                wheel.last_time = time_ms;
+                let target = wheel.target;
+                // Stop at the end of the content, where nothing moves.
+                let moved = self.scroll_chain_by(target, dx, dy, &mut |_| {});
+                if finished || !moved {
                     self.scroll_animation = ScrollAnimationState::None;
                 }
             }
