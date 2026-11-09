@@ -229,6 +229,21 @@ impl Document for DioxusDocument {
         // their own (e.g. JavaScript timers)
         let subdoc_changes = self.inner.borrow_mut().poll_subdocuments(Some(&waker));
 
+        // Events frames made outside any input event, such as a gliding scroll's.
+        let pending = self.inner.borrow_mut().take_pending_events();
+        let dispatched = !pending.is_empty();
+        if dispatched {
+            let handler = DioxusEventHandler {
+                vdom: &mut self.vdom,
+                vdom_state: &mut self.vdom_state,
+            };
+            let mut driver = EventDriver::new(&mut self.inner, handler);
+            for event in pending {
+                driver.handle_dom_event(event);
+            }
+        }
+        let subdoc_changes = subdoc_changes || dispatched;
+
         {
             let fut = self.vdom.wait_for_work();
             let mut pinned_fut = pin!(fut);

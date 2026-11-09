@@ -783,7 +783,11 @@ impl BaseDocument {
                 wheel.last_time = time_ms;
                 let target = wheel.target;
                 // Stop at the end of the content, where nothing moves.
-                let moved = self.scroll_chain_by(target, dx, dy, &mut |_| {});
+                let mut events = Vec::new();
+                let moved = self.scroll_chain_by(target, dx, dy, &mut |e| events.push(e));
+                for event in events {
+                    self.push_pending_event(event);
+                }
                 if finished || !moved {
                     self.scroll_animation = ScrollAnimationState::None;
                 }

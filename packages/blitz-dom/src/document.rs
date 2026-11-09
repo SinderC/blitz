@@ -368,6 +368,9 @@ pub struct BaseDocument {
     pub(crate) scrollbar_activity: HashMap<NodeId, Instant>,
     /// Whether and what kind of scroll animation is currently in progress
     pub(crate) scroll_animation: ScrollAnimationState,
+    /// Events a frame made outside any input event, such as a gliding wheel scroll's
+    /// `scroll` events, for the embedder to dispatch (see [`BaseDocument::take_pending_events`]).
+    pending_events: Vec<blitz_traits::events::DomEvent>,
 
     /// Text selection state (for non-input text)
     pub(crate) text_selection: TextSelection,
@@ -599,6 +602,7 @@ impl BaseDocument {
             hovered_scrollbar: None,
             scrollbar_activity: HashMap::new(),
             scroll_animation: ScrollAnimationState::None,
+            pending_events: Vec::new(),
             text_selection: TextSelection::default(),
             scratch: DocumentScratch::default(),
         };
@@ -2233,6 +2237,16 @@ impl BaseDocument {
             | custom_widget_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
             | self.scrollbars_animating()
+    }
+
+    /// Takes the events frames have made since the last call. The embedder dispatches
+    /// them like any other, to the page's handlers.
+    pub fn take_pending_events(&mut self) -> Vec<blitz_traits::events::DomEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    pub(crate) fn push_pending_event(&mut self, event: blitz_traits::events::DomEvent) {
+        self.pending_events.push(event);
     }
 
     /// Record pending [`DeviceChanges`] and request a redraw so that they are

@@ -438,6 +438,9 @@ impl<Rend: WindowRenderer> View<Rend> {
         if !is_blocked && is_visible && is_animating {
             self.request_redraw();
         }
+
+        // Events the frame made, such as a gliding scroll's, go to the page.
+        self.poll();
     }
 
     pub fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
