@@ -143,9 +143,21 @@ fn select_sub_document_paint_focus_keyboard_and_redraw() {
 
     click(&mut h, 100.0, 200.0);
     let count = window.0.load(Ordering::SeqCst);
-    key(&mut h, NamedKey::Escape);
+    assert!(
+        !key(&mut h, NamedKey::Escape).iter().any(|e| e == "keydown"),
+        "the outer page doesn't see keys for a list open in an iframe"
+    );
     assert!(window.0.load(Ordering::SeqCst) > count);
     assert_eq!(h.base().subdoc(host).unwrap().inner().open_select, None);
+
+    click(&mut h, 100.0, 200.0);
+    assert_eq!(h.base().subdoc(host).unwrap().inner().open_select, Some(s));
+    click(&mut h, 5.0, 5.0);
+    assert_eq!(
+        h.base().subdoc(host).unwrap().inner().open_select,
+        None,
+        "a click outside the iframe closes its list"
+    );
 
     {
         let mut parent = h.base_mut();
@@ -689,4 +701,56 @@ fn select_indented_markup_has_single_line_height() {
         h.layout_rect("#empty").height
     );
     assert_eq!(h.layout_rect("#narrow").height, inline.height);
+}
+
+#[test]
+fn select_open_list_keeps_key_releases_and_closes_on_other_input() {
+    let mut h = fixture();
+    open(&mut h);
+    let release = |h: &mut Harness| {
+        let events = h.dispatch_recorded([UiEvent::KeyUp(key_event(
+            Key::Named(NamedKey::Escape),
+            KeyState::Released,
+            Modifiers::default(),
+        ))]);
+        h.pump();
+        events
+    };
+    assert!(!key(&mut h, NamedKey::Escape).iter().any(|e| e == "keydown"));
+    assert_eq!(h.base().open_select, None);
+    assert!(
+        !release(&mut h).iter().any(|e| e == "keyup"),
+        "the release of a key the list took stays the list's"
+    );
+    assert!(key(&mut h, NamedKey::Escape).iter().any(|e| e == "keydown"));
+    assert!(release(&mut h).iter().any(|e| e == "keyup"));
+
+    open(&mut h);
+    h.wheel_at(380.0, 20.0, 0.0, -40.0);
+    assert_eq!(
+        h.base().open_select,
+        None,
+        "scrolling the page closes the list"
+    );
+
+    open(&mut h);
+    let p = pointer_event(
+        BlitzPointerId::Mouse,
+        380.0,
+        20.0,
+        MouseEventButton::Secondary,
+        MouseEventButtons::from(MouseEventButton::Secondary),
+        Modifiers::default(),
+    );
+    let events = h.dispatch_recorded([UiEvent::PointerDown(p.clone()), UiEvent::PointerUp(p)]);
+    h.pump();
+    assert!(
+        events.is_empty(),
+        "a right click over the page is the list's"
+    );
+    assert_eq!(h.base().open_select, None);
+
+    open(&mut h);
+    h.base_mut().close_all_selects();
+    assert_eq!(h.base().open_select, None);
 }

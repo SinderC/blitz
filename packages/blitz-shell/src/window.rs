@@ -871,7 +871,9 @@ impl<Rend: WindowRenderer> View<Rend> {
 
                 self.doc.handle_ui_event(UiEvent::Wheel(event));
             }
-            WindowEvent::Focused(_) => {}
+            // A select's list closes with the window's focus, as a native one does.
+            WindowEvent::Focused(false) => self.doc.inner_mut().close_all_selects(),
+            WindowEvent::Focused(true) => {}
             WindowEvent::TouchpadPressure { .. } => {}
             WindowEvent::PinchGesture { .. } => {},
             WindowEvent::PanGesture { .. } => {},

@@ -399,6 +399,9 @@ pub struct BaseDocument {
     pub(crate) dirty_select_nodes: HashSet<NodeId>,
     pub open_select: Option<NodeId>,
     pub(crate) select_pointer_capture: bool,
+    /// Keys pressed while a select's list was open, whose release the page doesn't see
+    /// either.
+    pub(crate) select_keys_down: Vec<keyboard_types::Code>,
     /// Nodes that contain sub documents
     pub(crate) sub_document_nodes: HashSet<NodeId>,
     /// Load state (abort controller and in-flight request id) for each
@@ -600,6 +603,7 @@ impl BaseDocument {
             dirty_select_nodes: HashSet::new(),
             open_select: None,
             select_pointer_capture: false,
+            select_keys_down: Vec::new(),
             net_provider,
             navigation_provider,
             top_navigation_provider: config.top_navigation_provider,
