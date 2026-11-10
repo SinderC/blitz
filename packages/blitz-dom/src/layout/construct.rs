@@ -893,10 +893,12 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
     };
     let is_focussed = node.is_focussed();
     let element = &mut node.data.downcast_element_mut().unwrap();
+    let is_password = !is_multiline && element.attr(local_name!("type")) == Some("password");
     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
         let mut text_input_data = TextInputData::new(is_multiline);
         let editor = &mut text_input_data.editor;
         editor.set_text(&initial_text);
+        text_input_data.set_masked(is_password);
         element.special_data = SpecialElementData::TextInput(text_input_data);
 
         // An input focused before its editor existed (e.g. focused before the first layout)
@@ -909,6 +911,8 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
     let SpecialElementData::TextInput(text_input_data) = &mut element.special_data else {
         unreachable!();
     };
+    // The type can change after the editor was made.
+    text_input_data.set_masked(is_password);
 
     let editor = &mut text_input_data.editor;
     editor.set_scale(doc.viewport.scale_f64() as f32);

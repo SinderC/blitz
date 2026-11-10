@@ -80,7 +80,13 @@ pub struct TextInputData {
     /// `final_layout`. Paint draws text from the unrounded origin so that it keeps its sub-pixel
     /// position while box edges stay snapped. Set by the `writing-mode` layout pass; zero otherwise.
     pub content_box_subpixel_offset: taffy::Point<f32>,
+    /// A password input's text. Its editor holds one [`MASK`] for each character, so only
+    /// those are laid out, painted and copied.
+    pub secret: Option<String>,
 }
+
+/// What a password input shows for each character of its text.
+pub const MASK: char = '\u{2022}';
 
 // FIXME: Implement Clone for PlainEditor
 impl Clone for TextInputData {
@@ -97,6 +103,7 @@ impl TextInputData {
             is_multiline,
             scroll_offset: 0.0,
             content_box_subpixel_offset: taffy::Point::ZERO,
+            secret: None,
         }
     }
 
@@ -106,10 +113,93 @@ impl TextInputData {
         layout_ctx: &mut LayoutContext<TextBrush>,
         text: &str,
     ) {
-        if self.editor.text() != text {
+        if let Some(secret) = &mut self.secret {
+            if secret != text {
+                text.clone_into(secret);
+                self.editor.set_text(&masked(text.chars().count()));
+                self.editor.driver(font_ctx, layout_ctx).refresh_layout();
+            }
+        } else if self.editor.text() != text {
             self.editor.set_text(text);
             self.editor.driver(font_ctx, layout_ctx).refresh_layout();
         }
+    }
+
+    /// Makes this a password input, which shows a [`MASK`] for each character, or a plain
+    /// one again.
+    pub fn set_masked(&mut self, masked_now: bool) {
+        if masked_now == self.secret.is_some() {
+            return;
+        }
+        if masked_now {
+            let text = self.editor.raw_text().to_owned();
+            self.editor.set_text(&masked(text.chars().count()));
+            self.secret = Some(text);
+        } else if let Some(text) = self.secret.take() {
+            self.editor.set_text(&text);
+        }
+    }
+
+    /// The input's text: a password input's own, not its mask.
+    pub fn value(&self) -> String {
+        match &self.secret {
+            Some(secret) => secret.clone(),
+            None => self.editor.raw_text().to_owned(),
+        }
+    }
+
+    /// The selection, in characters: a password input's, before an edit.
+    fn selected_chars(&self) -> std::ops::Range<usize> {
+        let bytes = self.editor.raw_selection().text_range();
+        let chars = |end: usize| self.editor.raw_text()[..end].chars().count();
+        chars(bytes.start)..chars(bytes.end)
+    }
+
+    /// After an edit of a password input's editor, takes what it changed into
+    /// [`Self::secret`] and masks the editor again. `selected` is the selection before the
+    /// edit, in characters.
+    ///
+    /// An edit replaces the selection: what now lies between the masks kept before and
+    /// after it is the new text, as typed or pasted. Deleting with nothing selected
+    /// leaves fewer masks, with the caret where they were.
+    fn unmask_edit(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        selected: Option<std::ops::Range<usize>>,
+    ) {
+        let Some(selected) = selected.filter(|_| self.secret.is_some()) else {
+            return;
+        };
+        let now = self.selected_chars().start;
+        let Some(secret) = &mut self.secret else {
+            return;
+        };
+        let old: Vec<char> = secret.chars().collect();
+        let shown: Vec<char> = self.editor.raw_text().chars().collect();
+        if shown.len() == old.len() && shown.iter().all(|&c| c == MASK) {
+            return;
+        }
+        let (kept_before, kept_after) = (selected.start, old.len() - selected.end);
+        let (next, caret): (String, usize) = if shown.len() >= kept_before + kept_after {
+            let end = shown.len() - kept_after;
+            let next = old[..kept_before]
+                .iter()
+                .chain(&shown[kept_before..end])
+                .chain(&old[selected.end..])
+                .collect();
+            (next, end)
+        } else {
+            let caret = now.min(shown.len());
+            let gone = old.len() - shown.len();
+            let next = old[..caret].iter().chain(&old[caret + gone..]).collect();
+            (next, caret)
+        };
+        let length = next.chars().count();
+        *secret = next;
+        self.editor.set_text(&masked(length));
+        let mut driver = self.editor.driver(font_ctx, layout_ctx);
+        driver.move_to_byte(caret * MASK.len_utf8());
     }
 
     /// Recompute [`Self::scroll_offset`] so that the caret stays visible within the input's
@@ -209,6 +299,26 @@ impl TextInputData {
     }
 
     pub(crate) fn apply_keypress_event(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        shell_provider: &dyn ShellProvider,
+        event: BlitzKeyEvent,
+    ) -> Option<GeneratedTextInputEvent> {
+        // A password is neither copied nor cut, as in a browser.
+        if self.secret.is_some()
+            && event.modifiers.contains(ACTION_MOD)
+            && matches!(&event.key, Key::Character(c) if matches!(c.to_lowercase().as_str(), "c" | "x"))
+        {
+            return None;
+        }
+        let selected = self.secret.is_some().then(|| self.selected_chars());
+        let generated = self.apply_keypress(font_ctx, layout_ctx, shell_provider, event);
+        self.unmask_edit(font_ctx, layout_ctx, selected);
+        generated
+    }
+
+    fn apply_keypress(
         &mut self,
         font_ctx: &mut FontContext,
         layout_ctx: &mut LayoutContext<TextBrush>,
@@ -379,6 +489,22 @@ impl TextInputData {
     }
 
     pub(crate) fn apply_apple_standard_keybinding(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        shell_provider: &dyn ShellProvider,
+        command: &str,
+    ) -> Option<GeneratedTextInputEvent> {
+        if self.secret.is_some() && command == "yank:" {
+            return None;
+        }
+        let selected = self.secret.is_some().then(|| self.selected_chars());
+        let generated = self.apply_keybinding(font_ctx, layout_ctx, shell_provider, command);
+        self.unmask_edit(font_ctx, layout_ctx, selected);
+        generated
+    }
+
+    fn apply_keybinding(
         &mut self,
         font_ctx: &mut FontContext,
         layout_ctx: &mut LayoutContext<TextBrush>,
@@ -775,6 +901,22 @@ impl TextInputData {
         layout_ctx: &mut LayoutContext<TextBrush>,
         event: BlitzImeEvent,
     ) -> Option<GeneratedTextInputEvent> {
+        // A password isn't composed where it shows: only committed text goes in.
+        if self.secret.is_some() && matches!(event, BlitzImeEvent::Preedit(..)) {
+            return None;
+        }
+        let selected = self.secret.is_some().then(|| self.selected_chars());
+        let generated = self.apply_ime(font_ctx, layout_ctx, event);
+        self.unmask_edit(font_ctx, layout_ctx, selected);
+        generated
+    }
+
+    fn apply_ime(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        event: BlitzImeEvent,
+    ) -> Option<GeneratedTextInputEvent> {
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
 
@@ -811,6 +953,11 @@ impl TextInputData {
             }
         }
     }
+}
+
+/// `length` masks.
+fn masked(length: usize) -> String {
+    std::iter::repeat_n(MASK, length).collect()
 }
 
 #[cfg(test)]
@@ -850,5 +997,102 @@ mod tests {
             BlitzImeEvent::Commit("text".into()),
         );
         assert_eq!(input.editor.text(), "text");
+    }
+
+    fn press(input: &mut TextInputData, key: Key, modifiers: Modifiers) {
+        input.apply_keypress_event(
+            &mut FontContext::new(),
+            &mut LayoutContext::new(),
+            &blitz_traits::shell::DummyShellProvider,
+            BlitzKeyEvent {
+                text: match &key {
+                    Key::Character(c) => Some(c.as_str().into()),
+                    _ => None,
+                },
+                key,
+                code: keyboard_types::Code::Unidentified,
+                modifiers,
+                location: keyboard_types::Location::Standard,
+                is_auto_repeating: false,
+                is_composing: false,
+                state: blitz_traits::events::KeyState::Pressed,
+            },
+        );
+    }
+
+    fn typed(input: &mut TextInputData, text: &str) {
+        for c in text.chars() {
+            press(input, Key::Character(c.to_string()), Modifiers::empty());
+        }
+    }
+
+    #[test]
+    fn a_password_shows_masks_and_keeps_its_text() {
+        let (mut font_ctx, mut layout_ctx) = (FontContext::new(), LayoutContext::new());
+        let mut input = TextInputData::new(false);
+        input.set_masked(true);
+        typed(&mut input, "pässword");
+        assert_eq!(input.value(), "pässword");
+        assert_eq!(input.editor.raw_text(), "••••••••");
+
+        press(
+            &mut input,
+            Key::Named(NamedKey::Backspace),
+            Modifiers::empty(),
+        );
+        assert_eq!(input.value(), "pässwor");
+        // In the middle: before "w", then a paste there.
+        for _ in 0..3 {
+            press(
+                &mut input,
+                Key::Named(NamedKey::ArrowLeft),
+                Modifiers::empty(),
+            );
+        }
+        press(&mut input, Key::Named(NamedKey::Delete), Modifiers::empty());
+        assert_eq!(input.value(), "pässor");
+        input.apply_ime_event(
+            &mut font_ctx,
+            &mut layout_ctx,
+            BlitzImeEvent::Commit("W•".into()),
+        );
+        assert_eq!(input.value(), "pässW•or");
+        press(
+            &mut input,
+            Key::Named(NamedKey::Backspace),
+            Modifiers::empty(),
+        );
+        assert_eq!(input.value(), "pässWor");
+        typed(&mut input, "x");
+        assert_eq!(input.value(), "pässWxor");
+
+        // Composing shows nothing in a password; only the commit goes in.
+        input.apply_ime_event(
+            &mut font_ctx,
+            &mut layout_ctx,
+            BlitzImeEvent::Preedit("仮".into(), None),
+        );
+        assert_eq!(input.editor.raw_text(), "••••••••");
+
+        press(&mut input, Key::Character("a".into()), ACTION_MOD);
+        typed(&mut input, "new");
+        assert_eq!(input.value(), "new");
+        assert_eq!(input.editor.raw_text(), "•••");
+
+        input.set_text(&mut font_ctx, &mut layout_ctx, "set");
+        assert_eq!(input.value(), "set");
+        assert_eq!(input.editor.raw_text(), "•••");
+        input.set_masked(false);
+        assert_eq!(input.editor.raw_text(), "set");
+    }
+
+    #[test]
+    fn a_password_is_not_copied_or_cut() {
+        let mut input = TextInputData::new(false);
+        input.set_masked(true);
+        typed(&mut input, "secret");
+        press(&mut input, Key::Character("a".into()), ACTION_MOD);
+        press(&mut input, Key::Character("x".into()), ACTION_MOD);
+        assert_eq!(input.value(), "secret");
     }
 }
