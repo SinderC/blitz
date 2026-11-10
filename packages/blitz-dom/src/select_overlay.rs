@@ -41,7 +41,7 @@ impl BaseDocument {
             if let Some(data) = self.select_data_mut(id) {
                 data.open = false;
             }
-            self.changed_nodes.insert(id);
+            self.has_changes = true;
             self.shell_provider.request_redraw();
         }
     }
@@ -71,7 +71,7 @@ impl BaseDocument {
         data.highlighted = selected;
         data.scroll_offset = 0;
         self.open_select = Some(id);
-        self.changed_nodes.insert(id);
+        self.has_changes = true;
         self.reveal_select_highlight(id);
         self.shell_provider.request_redraw();
         true
