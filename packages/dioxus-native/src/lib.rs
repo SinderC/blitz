@@ -188,17 +188,22 @@ pub fn launch_cfg_with_props<P: Clone + 'static, M: 'static>(
     #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
     let net_provider = {
         let net_waker = Some(Arc::new(proxy.clone()) as _);
-        let inner_net_provider = Arc::new(blitz_net::Provider::new(net_waker));
+        let inner_net_provider = Arc::new(match config.http_client.take() {
+            Some(client) => blitz_net::Provider::with_client(client, net_waker),
+            None => blitz_net::Provider::new(net_waker),
+        });
         vdom.provide_root_context(Arc::clone(&inner_net_provider));
 
-        Arc::new(DioxusNativeNetProvider::with_inner(
-            proxy.clone(),
-            inner_net_provider as _,
-        )) as Arc<dyn NetProvider>
+        Arc::new(
+            DioxusNativeNetProvider::with_inner(proxy.clone(), inner_net_provider as _)
+                .with_filter(config.request_filter.take()),
+        ) as Arc<dyn NetProvider>
     };
 
     #[cfg(any(not(feature = "net"), target_arch = "wasm32"))]
-    let net_provider = DioxusNativeNetProvider::shared(proxy.clone());
+    let net_provider = Arc::new(
+        DioxusNativeNetProvider::new(proxy.clone()).with_filter(config.request_filter.take()),
+    ) as Arc<dyn blitz_traits::net::NetProvider>;
 
     vdom.provide_root_context(Arc::clone(&net_provider));
 
