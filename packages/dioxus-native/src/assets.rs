@@ -6,9 +6,13 @@ use blitz_traits::net::{NetHandler, NetProvider, Request};
 /// Decides whether a document's request is made: see [`crate::Config::with_request_filter`].
 pub(crate) type RequestFilter = Arc<dyn Fn(&Request) -> bool + Send + Sync>;
 
+/// The app's own providers, by URL scheme: see [`crate::Config::with_protocol`].
+pub(crate) type Protocols = std::collections::HashMap<String, Arc<dyn NetProvider>>;
+
 pub struct DioxusNativeNetProvider {
     inner_net_provider: Option<Arc<dyn NetProvider + 'static>>,
     filter: Option<RequestFilter>,
+    protocols: Protocols,
 }
 
 #[allow(unused)]
@@ -31,6 +35,7 @@ impl DioxusNativeNetProvider {
         Self {
             inner_net_provider,
             filter: None,
+            protocols: Protocols::new(),
         }
     }
 
@@ -38,12 +43,19 @@ impl DioxusNativeNetProvider {
         Self {
             inner_net_provider: Some(inner),
             filter: None,
+            protocols: Protocols::new(),
         }
     }
 
     /// This provider, refusing the requests `filter` returns `false` for.
     pub(crate) fn with_filter(mut self, filter: Option<RequestFilter>) -> Self {
         self.filter = filter;
+        self
+    }
+
+    /// This provider, handing the requests for these schemes to their providers.
+    pub(crate) fn with_protocols(mut self, protocols: Protocols) -> Self {
+        self.protocols = protocols;
         self
     }
 
@@ -58,6 +70,8 @@ impl NetProvider for DioxusNativeNetProvider {
             #[cfg(feature = "tracing")]
             tracing::debug!(url = request.url.as_str(), "request refused by the filter");
             handler.error(request.url.to_string(), "refused".to_string());
+        } else if let Some(provider) = self.protocols.get(request.url.scheme()) {
+            provider.fetch(doc_id, request, handler);
         } else if request.url.scheme() == "dioxus" {
             #[allow(clippy::single_match)] // cfg'd code
             match dioxus_asset_resolver::native::serve_asset(request.url.path()) {

@@ -63,6 +63,8 @@ pub use {
 
 use blitz_dom::StyleThreading;
 pub use blitz_dom::{FontContext, Widget, build_single_font_ctx};
+/// Requests and handlers, for [`Config::with_request_filter`] and [`Config::with_protocol`].
+pub use blitz_traits::net;
 pub use config::Config;
 pub use event_handlers::WinitEventHandlerId;
 pub use hooks::{use_back_button, use_window_event};
@@ -196,13 +198,16 @@ pub fn launch_cfg_with_props<P: Clone + 'static, M: 'static>(
 
         Arc::new(
             DioxusNativeNetProvider::with_inner(proxy.clone(), inner_net_provider as _)
-                .with_filter(config.request_filter.take()),
+                .with_filter(config.request_filter.take())
+                .with_protocols(std::mem::take(&mut config.protocols)),
         ) as Arc<dyn NetProvider>
     };
 
     #[cfg(any(not(feature = "net"), target_arch = "wasm32"))]
     let net_provider = Arc::new(
-        DioxusNativeNetProvider::new(proxy.clone()).with_filter(config.request_filter.take()),
+        DioxusNativeNetProvider::new(proxy.clone())
+            .with_filter(config.request_filter.take())
+            .with_protocols(std::mem::take(&mut config.protocols)),
     ) as Arc<dyn blitz_traits::net::NetProvider>;
 
     vdom.provide_root_context(Arc::clone(&net_provider));
