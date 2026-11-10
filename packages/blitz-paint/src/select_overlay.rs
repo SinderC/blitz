@@ -47,19 +47,23 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
         None,
         &frame,
     );
-    // As Chromium does, the list takes its colors from the options' own styles, so a
-    // page's dark theme reaches it; without them, black on white.
+    // As Chromium does, the list takes its colors from the options' own styles, then
+    // the select's, so a page's dark theme reaches it; without either, black on white.
     let option_style = |id| doc.get_node(id).and_then(|n| n.primary_styles());
+    let background_of = |id| {
+        option_style(id)
+            .map(|s| {
+                s.get_background_color()
+                    .resolve_to_absolute(&s.clone_color())
+                    .as_srgb_color()
+            })
+            .filter(|c| c.components[3] > 0.0)
+    };
     let background = overlay
         .rows
         .first()
-        .and_then(|row| option_style(row.option))
-        .map(|s| {
-            s.get_background_color()
-                .resolve_to_absolute(&s.clone_color())
-                .as_srgb_color()
-        })
-        .filter(|c| c.components[3] > 0.0)
+        .and_then(|row| background_of(row.option))
+        .or_else(|| background_of(overlay.select))
         .unwrap_or(AlphaColor::WHITE);
     scene.fill(
         Fill::NonZero,

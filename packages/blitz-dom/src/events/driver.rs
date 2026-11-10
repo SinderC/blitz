@@ -289,18 +289,38 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 self.handle_dom_event(DomEvent::new(target, DomEventData::Wheel(data)))
             }
             UiEvent::KeyUp(data) => {
-                self.handle_dom_event(DomEvent::new(target, DomEventData::KeyUp(data)))
+                let swallowed = {
+                    let mut doc = self.doc.inner_mut();
+                    let held = doc.select_keys_down.iter().position(|&c| c == data.code);
+                    held.map(|i| doc.select_keys_down.swap_remove(i)).is_some()
+                };
+                if !swallowed {
+                    self.handle_dom_event(DomEvent::new(target, DomEventData::KeyUp(data)))
+                }
             }
-            // While a select's list is open, its keys are the list's, as a browser's
-            // native list takes them: the page never sees them.
-            UiEvent::KeyDown(data) if self.doc.inner().open_select.is_some() => {
+            // While a select's list is open, here or in the focused iframe, its keys are
+            // the list's, as a browser's native list takes them: the page never sees
+            // them, nor their release.
+            UiEvent::KeyDown(data) if self.doc.inner().has_open_select() => {
+                let mut doc = self.doc.inner_mut();
+                if !doc.select_keys_down.contains(&data.code) {
+                    doc.select_keys_down.push(data.code);
+                }
+                drop(doc);
                 let mut dom_event = DomEvent::new(target, DomEventData::KeyDown(data));
                 self.run_default_action(&mut dom_event);
                 self.process_queue();
             }
             UiEvent::KeyDown(data) => {
+                // A key held for a list in an iframe is the iframe's document's too, but
+                // only this one saw it released; pressed again, it is the page's.
+                self.doc
+                    .inner_mut()
+                    .select_keys_down
+                    .retain(|&c| c != data.code);
                 self.handle_dom_event(DomEvent::new(target, DomEventData::KeyDown(data)))
             }
+            UiEvent::Ime(_) if self.doc.inner().has_open_select() => {}
             UiEvent::Ime(data) => {
                 self.handle_dom_event(DomEvent::new(target, DomEventData::Ime(data)))
             }

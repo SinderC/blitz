@@ -46,6 +46,33 @@ impl BaseDocument {
         }
     }
 
+    /// Whether a select's list is open here, or in the document of the focused iframe,
+    /// which gets this document's keys.
+    pub fn has_open_select(&self) -> bool {
+        self.open_select.is_some()
+            || self
+                .focus_node_id
+                .and_then(|id| self.subdoc(id))
+                .is_some_and(|doc| doc.inner().has_open_select())
+    }
+
+    /// Closes the open list here and in every iframe's document.
+    pub fn close_all_selects(&mut self) {
+        self.close_select();
+        self.close_sub_selects(None);
+    }
+
+    /// Closes the lists open in iframes' documents, except in the iframe `keep`.
+    fn close_sub_selects(&mut self, keep: Option<NodeId>) {
+        for id in self.sub_document_node_ids() {
+            if Some(id) != keep {
+                if let Some(doc) = self.subdoc_mut(id) {
+                    doc.inner_mut().close_all_selects();
+                }
+            }
+        }
+    }
+
     pub fn open_select(&mut self, id: NodeId) -> bool {
         if !self.select_nodes.contains(&id)
             || self.nodes[id].attr(local_name!("disabled")).is_some()
@@ -266,7 +293,18 @@ impl BaseDocument {
             return true;
         }
         if let UiEvent::PointerDown(pointer) = event {
+            // A press outside an iframe moves focus out of it, which closes its list.
+            let hit = self
+                .hit(pointer.page_x(), pointer.page_y())
+                .map(|h| h.node_id);
+            self.close_sub_selects(hit);
             if pointer.button != blitz_traits::events::MouseEventButton::Main {
+                // Any press closes an open list; it doesn't reach the page beneath.
+                if self.open_select.is_some() {
+                    self.close_select();
+                    self.select_pointer_capture = true;
+                    return true;
+                }
                 return false;
             }
             if let Some(id) = self.open_select {
@@ -353,6 +391,9 @@ impl BaseDocument {
                             return true;
                         }
                     }
+                    // Scrolling the page closes the list, as Chromium's does, rather
+                    // than leave it hanging off a select scrolled away.
+                    self.close_select();
                 }
                 _ => {}
             }
