@@ -4,13 +4,18 @@ use std::collections::HashMap;
 
 use crate::node::ImageData;
 
-/// Bytes of decoded images kept at most. A decoded image takes four bytes a pixel,
-/// so a long page or list of images would otherwise keep gigabytes. Elements hold
-/// their own copy of their image, so dropping one here costs only a new fetch and
-/// decode when an element asks for it again.
+/// Bytes of decoded images kept at most, per document. A decoded image takes four
+/// bytes a pixel, so a long page or list of images would otherwise keep gigabytes.
+///
+/// Elements hold their own copy of their image, so dropping one here costs only a new
+/// fetch and decode when an element asks for it again. It doesn't bound memory
+/// outright: an image dropped while an element still shows it is decoded a second time
+/// if another element asks for it, and an image larger than this is never kept.
 const MAX_BYTES: usize = 128 * 1024 * 1024;
 
-/// What an SVG counts for: it is drawn when painted, not kept as pixels.
+/// What an SVG counts for: it is drawn when painted, not kept as pixels. A rough
+/// figure; a complex one's tree can take more.
+#[cfg(feature = "svg")]
 const SVG_BYTES: usize = 64 * 1024;
 
 /// Decoded images by URL, the least recently used dropped past [`MAX_BYTES`].

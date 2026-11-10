@@ -103,14 +103,21 @@ impl Config {
     }
 
     /// Serve every document's requests for URLs of `scheme` with `provider`, such
-    /// as images the app keeps itself. It answers on its own thread through the
-    /// handler it is given; the request filter still comes first.
+    /// as images the app keeps itself. The request filter still comes first, so it
+    /// must let the scheme through.
+    ///
+    /// The provider must answer every request, through the handler's `bytes` or
+    /// `error`, on its own thread: one left unanswered leaves its elements waiting.
+    /// Subdocuments, such as an `<iframe srcdoc>`'s, use the same providers, so
+    /// untrusted content can request the scheme's URLs too.
     pub fn with_protocol(
         mut self,
         scheme: impl Into<String>,
         provider: std::sync::Arc<dyn blitz_traits::net::NetProvider>,
     ) -> Self {
-        self.protocols.insert(scheme.into(), provider);
+        // A parsed URL's scheme is lowercase.
+        let scheme = scheme.into().to_ascii_lowercase();
+        self.protocols.insert(scheme, provider);
         self
     }
 
