@@ -47,20 +47,43 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
         None,
         &frame,
     );
+    // As Chromium does, the list takes its colors from the options' own styles, so a
+    // page's dark theme reaches it; without them, black on white.
+    let option_style = |id| doc.get_node(id).and_then(|n| n.primary_styles());
+    let background = overlay
+        .rows
+        .first()
+        .and_then(|row| option_style(row.option))
+        .map(|s| {
+            s.get_background_color()
+                .resolve_to_absolute(&s.clone_color())
+                .as_srgb_color()
+        })
+        .filter(|c| c.components[3] > 0.0)
+        .unwrap_or(AlphaColor::WHITE);
     scene.fill(
         Fill::NonZero,
         transform,
-        AlphaColor::WHITE,
+        background,
         None,
         &frame.inset(-1.0),
     );
-    let color = doc
+    let select_color = doc
         .get_node(overlay.select)
         .and_then(|n| n.primary_styles())
         .map(|s| s.clone_color().as_srgb_color())
         .unwrap_or(AlphaColor::BLACK);
+    let row_colors: Vec<_> = overlay
+        .rows
+        .iter()
+        .map(|row| {
+            option_style(row.option)
+                .map(|s| s.clone_color().as_srgb_color())
+                .unwrap_or(select_color)
+        })
+        .collect();
     scene.push_clip_layer(Fill::NonZero, transform, &frame.inset(-1.0));
-    for row in overlay.rows {
+    for (row, color) in overlay.rows.into_iter().zip(row_colors) {
         let rect = Rect::new(
             row.rect.x,
             row.rect.y,
