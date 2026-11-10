@@ -702,7 +702,7 @@ pub(crate) fn handle_click(
                         );
                         doc.open_select(node_id);
                     }
-                    break 'matched true;
+                    break 'matched;
                 }
                 local_name!("input") if el.attr(local_name!("type")) == Some("checkbox") => {
                     let mut is_checked = false;
