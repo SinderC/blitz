@@ -3,8 +3,12 @@ use std::sync::Arc;
 
 use blitz_traits::net::{NetHandler, NetProvider, Request};
 
+/// Decides whether a document's request is made: see [`crate::Config::with_request_filter`].
+pub(crate) type RequestFilter = Arc<dyn Fn(&Request) -> bool + Send + Sync>;
+
 pub struct DioxusNativeNetProvider {
     inner_net_provider: Option<Arc<dyn NetProvider + 'static>>,
+    filter: Option<RequestFilter>,
 }
 
 #[allow(unused)]
@@ -24,13 +28,23 @@ impl DioxusNativeNetProvider {
         #[cfg(all(not(feature = "data-uri"), not(feature = "net")))]
         let inner_net_provider = None;
 
-        Self { inner_net_provider }
+        Self {
+            inner_net_provider,
+            filter: None,
+        }
     }
 
     pub fn with_inner(proxy: BlitzShellProxy, inner: Arc<dyn NetProvider>) -> Self {
         Self {
             inner_net_provider: Some(inner),
+            filter: None,
         }
+    }
+
+    /// This provider, refusing the requests `filter` returns `false` for.
+    pub(crate) fn with_filter(mut self, filter: Option<RequestFilter>) -> Self {
+        self.filter = filter;
+        self
     }
 
     pub fn inner(&self) -> Option<&Arc<dyn NetProvider>> {
@@ -40,7 +54,11 @@ impl DioxusNativeNetProvider {
 
 impl NetProvider for DioxusNativeNetProvider {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
-        if request.url.scheme() == "dioxus" {
+        if self.filter.as_ref().is_some_and(|allows| !allows(&request)) {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(url = request.url.as_str(), "request refused by the filter");
+            handler.error(request.url.to_string(), "refused".to_string());
+        } else if request.url.scheme() == "dioxus" {
             #[allow(clippy::single_match)] // cfg'd code
             match dioxus_asset_resolver::native::serve_asset(request.url.path()) {
                 Ok(res) => {
