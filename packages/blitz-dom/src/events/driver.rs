@@ -291,6 +291,13 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             UiEvent::KeyUp(data) => {
                 self.handle_dom_event(DomEvent::new(target, DomEventData::KeyUp(data)))
             }
+            // While a select's list is open, its keys are the list's, as a browser's
+            // native list takes them: the page never sees them.
+            UiEvent::KeyDown(data) if self.doc.inner().open_select.is_some() => {
+                let mut dom_event = DomEvent::new(target, DomEventData::KeyDown(data));
+                self.run_default_action(&mut dom_event);
+                self.process_queue();
+            }
             UiEvent::KeyDown(data) => {
                 self.handle_dom_event(DomEvent::new(target, DomEventData::KeyDown(data)))
             }
