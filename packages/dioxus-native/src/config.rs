@@ -5,7 +5,7 @@ use peniko::Color;
 use winit::window::WindowAttributes;
 
 use crate::KeyboardShortcut;
-use crate::assets::RequestFilter;
+use crate::assets::{Protocols, RequestFilter};
 
 /// Launch-time configuration for a dioxus-native application.
 pub struct Config {
@@ -16,6 +16,7 @@ pub struct Config {
     #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
     pub(crate) devtools_shortcuts: Vec<KeyboardShortcut>,
     pub(crate) request_filter: Option<RequestFilter>,
+    pub(crate) protocols: Protocols,
     #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
     pub(crate) http_client: Option<blitz_net::reqwest::Client>,
 }
@@ -52,6 +53,7 @@ impl Default for Config {
                 Vec::new()
             },
             request_filter: None,
+            protocols: Protocols::new(),
             #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
             http_client: None,
         }
@@ -97,6 +99,18 @@ impl Config {
         filter: impl Fn(&blitz_traits::net::Request) -> bool + Send + Sync + 'static,
     ) -> Self {
         self.request_filter = Some(std::sync::Arc::new(filter));
+        self
+    }
+
+    /// Serve every document's requests for URLs of `scheme` with `provider`, such
+    /// as images the app keeps itself. It answers on its own thread through the
+    /// handler it is given; the request filter still comes first.
+    pub fn with_protocol(
+        mut self,
+        scheme: impl Into<String>,
+        provider: std::sync::Arc<dyn blitz_traits::net::NetProvider>,
+    ) -> Self {
+        self.protocols.insert(scheme.into(), provider);
         self
     }
 
