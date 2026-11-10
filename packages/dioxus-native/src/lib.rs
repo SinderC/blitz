@@ -18,6 +18,7 @@ mod event_handlers;
 mod hooks;
 mod link_handler;
 mod shortcut;
+mod windows;
 
 #[cfg(feature = "prelude")]
 pub mod prelude;
@@ -61,19 +62,18 @@ pub use {
     wgpu_context::DeviceHandle,
 };
 
-use blitz_dom::StyleThreading;
 pub use blitz_dom::{FontContext, Widget, build_single_font_ctx};
 pub use config::Config;
 pub use event_handlers::WinitEventHandlerId;
 pub use hooks::{use_back_button, use_window_event};
 pub use shortcut::KeyboardShortcut;
+pub use windows::{Windows, use_windows};
 pub use winit;
 pub use winit::dpi::{LogicalSize, PhysicalSize};
 pub use winit::window::WindowAttributes;
 
 use blitz_shell::{BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop};
 use dioxus_core::{ComponentFunction, Element, VirtualDom, consume_context, use_hook};
-use link_handler::DioxusNativeNavigationProvider;
 use std::any::Any;
 use std::sync::Arc;
 use winit::{
@@ -186,65 +186,43 @@ pub fn launch_cfg_with_props<P: Clone + 'static, M: 'static>(
     }
 
     #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
-    let net_provider = {
+    let inner_net_provider = {
         let net_waker = Some(Arc::new(proxy.clone()) as _);
-        let inner_net_provider = Arc::new(blitz_net::Provider::new(net_waker));
-        vdom.provide_root_context(Arc::clone(&inner_net_provider));
-
-        Arc::new(DioxusNativeNetProvider::with_inner(
-            proxy.clone(),
-            inner_net_provider as _,
-        )) as Arc<dyn NetProvider>
+        Arc::new(blitz_net::Provider::new(net_waker))
     };
+    #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
+    let net_provider = Arc::new(DioxusNativeNetProvider::with_inner(
+        proxy.clone(),
+        Arc::clone(&inner_net_provider) as _,
+    )) as Arc<dyn NetProvider>;
 
     #[cfg(any(not(feature = "net"), target_arch = "wasm32"))]
     let net_provider = DioxusNativeNetProvider::shared(proxy.clone());
 
-    vdom.provide_root_context(Arc::clone(&net_provider));
-
     #[cfg(feature = "html")]
-    let html_parser_provider = {
-        let html_parser = Arc::new(blitz_html::HtmlProvider) as _;
-        vdom.provide_root_context(Arc::clone(&html_parser));
-        Some(html_parser)
-    };
+    let html_parser_provider = Some(Arc::new(blitz_html::HtmlProvider) as _);
     #[cfg(not(feature = "html"))]
     let html_parser_provider = None;
 
-    let navigation_provider = Some(Arc::new(DioxusNativeNavigationProvider) as _);
-
-    // Create document + window from the baked virtualdom
-    let doc = DioxusDocument::new(
-        vdom,
-        DocumentConfig {
-            net_provider: Some(net_provider),
-            html_parser_provider,
-            navigation_provider,
-            font_ctx: config.font_ctx,
-            style_threading: StyleThreading::Parallel,
-            ..Default::default()
-        },
-    );
-    #[cfg(any(feature = "vello", feature = "vello-hybrid"))]
-    let renderer = DioxusNativeWindowRenderer::with_options(RendererOptions {
-        base_color: config.base_color,
-        alpha_mode: config.alpha_mode,
+    // Every window, this one and any opened later, is made the same way.
+    let factory = windows::WindowFactory {
+        net_provider,
+        #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
+        inner_net_provider,
+        html_parser_provider,
+        #[cfg(any(feature = "vello", feature = "vello-hybrid"))]
         features,
+        #[cfg(any(feature = "vello", feature = "vello-hybrid"))]
         limits,
-    });
-    #[cfg(not(any(feature = "vello", feature = "vello-hybrid")))]
-    let renderer = DioxusNativeWindowRenderer::with_options(RendererOptions {
-        base_color: config.base_color,
-        alpha_mode: config.alpha_mode,
-    });
+    };
     #[cfg(feature = "devtools")]
     let devtools_shortcuts = std::mem::take(&mut config.devtools_shortcuts);
-    let config =
-        WindowConfig::with_attributes(Box::new(doc) as _, renderer, config.window_attributes);
+    let config = factory.build(vdom, config);
 
     // Create application
     #[allow(unused_mut)]
     let mut application = DioxusNativeApplication::new(proxy, event_queue, config);
+    application.set_window_factory(factory);
     #[cfg(feature = "devtools")]
     application.set_devtools_shortcuts(devtools_shortcuts);
 
