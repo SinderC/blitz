@@ -13,6 +13,9 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+/// The HTTP client crate, for building a client to pass to [`Provider::with_client`].
+pub use reqwest;
+
 #[cfg(feature = "cache")]
 use http_cache_reqwest::{
     CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
@@ -87,8 +90,13 @@ impl Provider {
         let builder = reqwest::Client::builder();
         #[cfg(feature = "cookies")]
         let builder = builder.cookie_store(true);
-        let client = builder.build().unwrap();
+        Self::with_client(builder.build().unwrap(), waker)
+    }
 
+    /// A provider whose HTTP requests go through `client`, such as one with its own
+    /// DNS resolver, proxy or redirect policy. `data:` and `file:` URLs are still
+    /// served without it.
+    pub fn with_client(client: reqwest::Client, waker: Option<Arc<dyn NetWaker>>) -> Self {
         #[cfg(feature = "cache")]
         let cache_manager = CACacheManager::new(get_cache_path(), true);
 

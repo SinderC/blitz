@@ -5,6 +5,7 @@ use peniko::Color;
 use winit::window::WindowAttributes;
 
 use crate::KeyboardShortcut;
+use crate::assets::RequestFilter;
 
 /// Launch-time configuration for a dioxus-native application.
 pub struct Config {
@@ -14,6 +15,9 @@ pub struct Config {
     pub(crate) base_color: Option<Color>,
     #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
     pub(crate) devtools_shortcuts: Vec<KeyboardShortcut>,
+    pub(crate) request_filter: Option<RequestFilter>,
+    #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
+    pub(crate) http_client: Option<blitz_net::reqwest::Client>,
 }
 
 impl LaunchConfig for Config {}
@@ -47,6 +51,9 @@ impl Default for Config {
             } else {
                 Vec::new()
             },
+            request_filter: None,
+            #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
+            http_client: None,
         }
     }
 }
@@ -79,6 +86,25 @@ impl Config {
     /// mode; unsupported modes are ignored by the active renderer.
     pub fn with_alpha_mode(mut self, alpha_mode: CompositeAlphaMode) -> Self {
         self.alpha_mode = Some(alpha_mode);
+        self
+    }
+
+    /// Set a filter that every document's requests pass first, whatever their
+    /// scheme: a request it returns `false` for fails without being made. For
+    /// documents with untrusted content, such as to refuse `file:` URLs.
+    pub fn with_request_filter(
+        mut self,
+        filter: impl Fn(&blitz_traits::net::Request) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.request_filter = Some(std::sync::Arc::new(filter));
+        self
+    }
+
+    /// Set the client that documents' HTTP requests go through, instead of a
+    /// default one: such as one whose DNS resolver refuses some addresses.
+    #[cfg(all(feature = "net", not(target_arch = "wasm32")))]
+    pub fn with_http_client(mut self, client: blitz_net::reqwest::Client) -> Self {
+        self.http_client = Some(client);
         self
     }
 
