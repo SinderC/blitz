@@ -11,7 +11,13 @@ use crate::node::ImageData;
 /// fetch and decode when an element asks for it again. It doesn't bound memory
 /// outright: an image dropped while an element still shows it is decoded a second time
 /// if another element asks for it, and an image larger than this is never kept.
-const MAX_BYTES: usize = 128 * 1024 * 1024;
+///
+/// The GPU renderer keeps a copy of an image while this holds it (dropping unused ones
+/// only past its own budget), in atlas textures of 64 MB each that are never freed once
+/// made. A larger cache grows the atlas for the rest of the session; where the GPU
+/// shares the RAM, as on Apple silicon, that is the app's memory. 32 MB holds about 500
+/// images of 128 px a side, or a full-window photo on a 2× screen.
+const MAX_BYTES: usize = 32 * 1024 * 1024;
 
 /// What an SVG counts for: it is drawn when painted, not kept as pixels. A rough
 /// figure; a complex one's tree can take more.
