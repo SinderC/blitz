@@ -2,7 +2,7 @@ use blitz_traits::node_id::NodeId;
 use style::values::computed::Contain;
 use taffy::{
     BoxSizing, CoreStyle as _, LayoutInput, LayoutOutput, MaybeResolve as _, ResolveOrZero as _,
-    Size,
+    RunMode, Size,
 };
 
 use super::replaced::{IntrinsicSizes, ReplacedContext, compute_replaced_layout};
@@ -16,8 +16,7 @@ impl LayoutPassState<'_> {
     ) -> LayoutOutput {
         let node = &self.nodes[id];
         let style = node.layout_style();
-        let computed = node.primary_styles().unwrap();
-        let containment = computed.get_box().contain;
+        let containment = node.primary_styles().unwrap().get_box().contain;
         let layout = node
             .element_data()
             .unwrap()
@@ -86,16 +85,29 @@ impl LayoutPassState<'_> {
                 (width + pb.horizontal_axis_sum()).min(max_width.unwrap_or(f32::INFINITY));
             output.size.width = output.size.width.max(min_width);
         }
+        // Browsers center a select's label in the block axis of its content box, so a
+        // `height` taller (or shorter) than the line leaves equal space above and below.
+        let block_offset = (output.size.height - pb.vertical_axis_sum() - height) / 2.0;
         if let Some(line) = layout
             .layout
             .get(0)
             .filter(|_| !style.contain().suppresses_baseline())
         {
-            let baseline = pb.top + line.metrics().baseline / scale;
+            let baseline = pb.top + block_offset + line.metrics().baseline / scale;
             output.baselines = taffy::Baselines {
                 first: Some(baseline),
                 last: Some(baseline),
             };
+        }
+        // The style borrows the node, which the offset below is written to.
+        drop(style);
+        if inputs.run_mode == RunMode::PerformLayout {
+            if let Some(layout) = self.nodes[id]
+                .element_data_mut()
+                .and_then(|el| el.inline_layout_data.as_mut())
+            {
+                layout.block_offset = block_offset;
+            }
         }
         output
     }
