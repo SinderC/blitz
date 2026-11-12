@@ -584,9 +584,19 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     // locally for use within this function
     let drag_mode = doc.drag_mode.take();
 
-    // Don't dispatch click if we were doing a text selection drag or panning
-    // the document with a touch
-    let do_click = drag_mode == DragMode::None;
+    // No click after panning the document with a touch or dragging a scrollbar. After
+    // a text selection drag, which any press moving over 2px begins, the click goes to
+    // the nearest element holding both the press and the release, as in browsers: a
+    // trackpad click often moves that far. Except in a link, where the drag is taken
+    // to select the link's text rather than follow it.
+    let click_target = match drag_mode {
+        DragMode::None => Some(target),
+        DragMode::Selecting => doc
+            .mousedown_node_id
+            .and_then(|down| common_element_ancestor(doc, down, target))
+            .filter(|&id| !in_link(doc, id)),
+        _ => None,
+    };
 
     // Repaint so a dragged scrollbar thumb drops its active styling, and
     // restart its fade-out delay now that the drag no longer holds it shown
@@ -607,8 +617,12 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
         }
     }
 
+    let Some(target) = click_target else {
+        return;
+    };
+
     // Dispatch a click event
-    if do_click && event.button == MouseEventButton::Main {
+    if event.button == MouseEventButton::Main {
         if event.is_finger() {
             update_focus_for_press(doc, target, &mut dispatch_event);
         }
@@ -616,12 +630,36 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     }
 
     // Dispatch a context menu event
-    if do_click && event.button == MouseEventButton::Secondary {
+    if event.button == MouseEventButton::Secondary {
         dispatch_event(DomEvent::new(
             target,
             DomEventData::ContextMenu(event.clone()),
         ));
     }
+}
+
+/// The nearest element holding both `a` and `b`, either of which may be a text node.
+fn common_element_ancestor(doc: &BaseDocument, a: NodeId, b: NodeId) -> Option<NodeId> {
+    let element = |id: NodeId| {
+        std::iter::successors(Some(id), |&id| doc.nodes[id].parent)
+            .find(|&id| doc.nodes[id].is_element())
+    };
+    let a = doc.node_element_ancestors(element(a)?);
+    let b = doc.node_element_ancestors(element(b)?);
+    a.iter()
+        .zip(&b)
+        .take_while(|(a, b)| a == b)
+        .last()
+        .map(|(&id, _)| id)
+}
+
+/// Whether `id` is in a link: an `<a>` with an `href`, or inside one.
+fn in_link(doc: &BaseDocument, id: NodeId) -> bool {
+    std::iter::successors(Some(id), |&id| doc.nodes[id].parent).any(|id| {
+        doc.nodes[id].element_data().is_some_and(|el| {
+            el.name.local == local_name!("a") && el.attr(local_name!("href")).is_some()
+        })
+    })
 }
 
 /// Focus the nearest inclusive ancestor of `target` that is focusable (including
