@@ -15,6 +15,7 @@ mod background_size;
 mod br_trailing_line;
 mod button_alignment;
 mod checked_attribute;
+mod click_after_small_move;
 mod clipboard;
 mod comment_layout;
 mod custom_widget_layout;
