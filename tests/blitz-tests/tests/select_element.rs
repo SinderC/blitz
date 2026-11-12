@@ -754,3 +754,28 @@ fn select_open_list_keeps_key_releases_and_closes_on_other_input() {
     h.base_mut().close_all_selects();
     assert_eq!(h.base().open_select, None);
 }
+
+#[test]
+fn select_label_centers_in_a_taller_content_box() {
+    let h = Harness::from_html(
+        r#"<body style="font:16px sans-serif">
+        <select id="auto" style="appearance:none;border:0;padding:0"><option>Label</option></select>
+        <select id="tall" style="appearance:none;border:0;padding:4px 0 0;height:64px"><option>Label</option></select>
+    </body>"#,
+    );
+    let doc = h.base();
+    let offset = |selector: &str| {
+        doc.get_node(h.node(selector))
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .inline_layout_data
+            .as_ref()
+            .unwrap()
+            .block_offset
+    };
+    let line = h.layout_rect("#auto").height;
+    assert_eq!(offset("#auto"), 0.0);
+    // 60px of content box, the rest of the 64px height is padding above it.
+    assert!((offset("#tall") - (60.0 - line) / 2.0).abs() < 0.5);
+}
