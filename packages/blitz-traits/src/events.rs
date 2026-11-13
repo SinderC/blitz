@@ -582,9 +582,36 @@ pub enum BlitzWheelDelta {
     Pixels(f64, f64),
 }
 
+/// Where a wheel event falls in its gesture, for a device that says so, as a trackpad
+/// does on macOS and Wayland. Others send only [`BlitzWheelPhase::Moved`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlitzWheelPhase {
+    Started,
+    #[default]
+    Moved,
+    /// The fingers lifted, the momentum stopped, or the system cancelled the gesture.
+    Ended,
+}
+
+/// What drives a wheel event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlitzScrollSource {
+    /// The platform doesn't say.
+    #[default]
+    Unknown,
+    /// A physical wheel, usually on a mouse.
+    Wheel,
+    /// Fingers moving on a touchpad.
+    Finger,
+    /// The system going on with a finger scroll after the fingers lifted, as macOS does.
+    Momentum,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlitzWheelEvent {
     pub delta: BlitzWheelDelta,
+    pub phase: BlitzWheelPhase,
+    pub source: BlitzScrollSource,
     pub coords: PointerCoords,
     pub buttons: MouseEventButtons,
     pub mods: Modifiers,
