@@ -6,9 +6,9 @@
 
 use blitz_dom::Document;
 use blitz_traits::events::{
-    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
-    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
-    PointerDetails, UiEvent,
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzScrollSource,
+    BlitzWheelDelta, BlitzWheelEvent, BlitzWheelPhase, KeyState, MouseEventButton,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
 use keyboard_types::{Code, Key, Location, Modifiers};
 use smol_str::SmolStr;
@@ -188,6 +188,8 @@ impl<D: Document> Harness<D> {
         self.move_mouse_to(x, y);
         let event = BlitzWheelEvent {
             delta: BlitzWheelDelta::Pixels(delta_x, delta_y),
+            phase: BlitzWheelPhase::Moved,
+            source: BlitzScrollSource::Unknown,
             coords: coords(x, y),
             buttons: MouseEventButtons::empty(),
             mods: Modifiers::default(),

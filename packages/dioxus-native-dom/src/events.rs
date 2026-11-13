@@ -3,8 +3,8 @@ use blitz_dom::{
     ScrollLogicalPosition as BlitzScrollLogicalPosition,
 };
 use blitz_traits::events::{
-    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzScrollEvent, BlitzWheelDelta,
-    BlitzWheelEvent, MouseEventButton,
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzScrollEvent, BlitzScrollSource,
+    BlitzWheelDelta, BlitzWheelEvent, BlitzWheelPhase, MouseEventButton,
 };
 use dioxus_html::{
     AnimationData, BeforeInputData, CancelData, ClipboardData, CompositionData, DragData,
@@ -617,6 +617,18 @@ impl HasScrollData for NativeScrollData {
 
 #[derive(Clone)]
 pub struct NativeWheelData(pub(crate) BlitzWheelEvent);
+
+impl NativeWheelData {
+    /// Where the event falls in its gesture: [`WheelData`] has no word for it.
+    pub fn phase(&self) -> BlitzWheelPhase {
+        self.0.phase
+    }
+
+    /// What drives the event: [`WheelData`] has no word for it.
+    pub fn source(&self) -> BlitzScrollSource {
+        self.0.source
+    }
+}
 impl HasWheelData for NativeWheelData {
     fn as_any(&self) -> &dyn Any {
         self as &dyn Any
