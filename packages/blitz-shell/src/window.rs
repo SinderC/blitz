@@ -454,6 +454,16 @@ impl<Rend: WindowRenderer> View<Rend> {
         }
     }
 
+    /// Whether the window is on Wayland.
+    fn on_wayland(&self) -> bool {
+        use winit::raw_window_handle::RawDisplayHandle;
+
+        self.window
+            .rwh_06_display_handle()
+            .display_handle()
+            .is_ok_and(|h| matches!(h.as_raw(), RawDisplayHandle::Wayland(_)))
+    }
+
     pub fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
         let inner = self.doc.inner();
         let scale = inner.viewport().scale_f64();
@@ -712,7 +722,16 @@ impl<Rend: WindowRenderer> View<Rend> {
 
                 self.doc.handle_ui_event(event);
             }
-            WindowEvent::PointerEntered { /*device_id*/.. } => {}
+            WindowEvent::PointerEntered { kind, .. } => {
+                // On Wayland a mouse enters with no buttons held: a surface keeps the
+                // pointer while one is, so a release it missed went to the compositor,
+                // as when it took a press to move or resize the window. Without this
+                // the buttons would stay held. X11 also reports crossings while a
+                // button is held, so there the buttons stay as they are.
+                if pointer_kind_to_blitz(&kind) == BlitzPointerId::Mouse && self.on_wayland() {
+                    self.buttons = MouseEventButtons::None;
+                }
+            }
             WindowEvent::PointerLeft { position, primary, kind, .. } => {
                 let id = pointer_kind_to_blitz(&kind);
 
@@ -800,7 +819,9 @@ impl<Rend: WindowRenderer> View<Rend> {
 
                 match state {
                     ElementState::Pressed => self.buttons |= button.into(),
-                    ElementState::Released => self.buttons ^= button.into(),
+                    // Removed, not toggled: a release whose press was missed
+                    // mustn't leave the button held.
+                    ElementState::Released => self.buttons.remove(button.into()),
                 }
 
                 let pointer_event = BlitzPointerEvent {
