@@ -747,8 +747,9 @@ impl<Rend: WindowRenderer> View<Rend> {
                     let position = position.unwrap_or(self.pointer_pos);
                     self.pointer_pos = position;
 
-                    // The pointer is no longer pressed.
-                    self.buttons ^= MouseEventButton::Main.into();
+                    // The pointer is no longer pressed: removed, not toggled, as
+                    // another touch's release may have cleared it already.
+                    self.buttons.remove(MouseEventButton::Main.into());
 
                     let event = BlitzPointerEvent {
                         id,
