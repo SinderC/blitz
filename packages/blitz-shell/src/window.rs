@@ -662,11 +662,14 @@ impl<Rend: WindowRenderer> View<Rend> {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key_code) = event.physical_key && event.state.is_pressed() {
+                        #[cfg(feature = "zoom-shortcuts")]
                         let ctrl = self.keyboard_modifiers.state().control_key();
+                        #[cfg(feature = "zoom-shortcuts")]
                         let meta = self.keyboard_modifiers.state().meta_key();
                         let alt = self.keyboard_modifiers.state().alt_key();
 
                         // Ctrl/Super keyboard shortcuts
+                        #[cfg(feature = "zoom-shortcuts")]
                         if ctrl | meta {
                             match key_code {
                                 KeyCode::Equal => {
