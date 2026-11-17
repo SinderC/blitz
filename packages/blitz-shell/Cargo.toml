@@ -11,10 +11,14 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["accessibility", "file-dialog", "zoom-shortcuts"]
+default = ["accessibility", "file-dialog", "zoom-shortcuts", "devtools-shortcuts"]
 # Ctrl/Cmd with =, - and 0 zoom the whole document in, out and back, by the keys'
 # places on a US keyboard. Off for an app that gives these keys a meaning of its own.
 zoom-shortcuts = []
+# Alt with D, H and T show the layout boxes, highlight the hovered node and print the
+# layout tree, by the keys' places. Off for an app that gives these keys a meaning of
+# its own.
+devtools-shortcuts = []
 accessibility = [
     "dep:accesskit",
     "dep:accesskit_xplat",
