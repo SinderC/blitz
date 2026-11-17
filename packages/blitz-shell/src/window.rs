@@ -14,7 +14,8 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::Viewport;
 use winit::dpi::{LogicalPosition, PhysicalInsets, PhysicalPosition};
-use winit::keyboard::PhysicalKey;
+#[cfg(any(feature = "zoom-shortcuts", feature = "devtools-shortcuts"))]
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 use atomic_refcell::AtomicRefCell;
 use std::any::Any;
@@ -24,7 +25,7 @@ use web_time::Instant;
 use winit::event::{ButtonSource, ElementState, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Theme, WindowAttributes, WindowId};
-use winit::{event::Modifiers, event::WindowEvent, keyboard::KeyCode, window::Window};
+use winit::{event::Modifiers, event::WindowEvent, window::Window};
 
 #[cfg(feature = "accessibility")]
 use crate::accessibility::AccessibilityState;
@@ -661,11 +662,13 @@ impl<Rend: WindowRenderer> View<Rend> {
                 self.keyboard_modifiers = new_state;
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                #[cfg(any(feature = "zoom-shortcuts", feature = "devtools-shortcuts"))]
                 if let PhysicalKey::Code(key_code) = event.physical_key && event.state.is_pressed() {
                         #[cfg(feature = "zoom-shortcuts")]
                         let ctrl = self.keyboard_modifiers.state().control_key();
                         #[cfg(feature = "zoom-shortcuts")]
                         let meta = self.keyboard_modifiers.state().meta_key();
+                        #[cfg(feature = "devtools-shortcuts")]
                         let alt = self.keyboard_modifiers.state().alt_key();
 
                         // Ctrl/Super keyboard shortcuts
@@ -686,6 +689,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                         }
 
                         // Alt keyboard shortcuts
+                        #[cfg(feature = "devtools-shortcuts")]
                         if alt {
                             match key_code {
                                 KeyCode::KeyD => {
