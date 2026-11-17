@@ -27,7 +27,7 @@ const FONT_EMBOLDEN_ENABLED: bool = cfg!(any(
     all(feature = "apple-font-embolden", target_os = "ios"),
 ));
 
-/// The default color for text selection highlights
+/// The color for text selection highlights when `::selection` sets no background
 const SELECTION_COLOR: Color = Color::from_rgb8(180, 213, 255);
 
 /// Pre-computed `Scene`s for each CustomWidget, keyed by `(document id, node id)`

@@ -7,11 +7,11 @@ use peniko::Fill;
 use std::sync::Arc;
 
 use crate::color::{Color, ToColorColor as _};
+use crate::FONT_EMBOLDEN_ENABLED;
 use crate::text_decorations::{
     DecorationRunGeometry, DecorationStackEntry, LineDecoration, ResolvedTextShadow,
     WinAscentCache, draw_line_text_shadows, flush_line_decorations, resolve_decoration_entry,
 };
-use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 
 /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
 ///
@@ -355,6 +355,7 @@ pub(crate) fn draw_text_selection(
     transform: Affine,
     selection_start: usize,
     selection_end: usize,
+    color: Color,
 ) {
     let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
     let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
@@ -365,7 +366,7 @@ pub(crate) fn draw_text_selection(
         scene.fill(
             Fill::NonZero,
             transform,
-            SELECTION_COLOR,
+            color,
             None,
             &rect,
             AntiAliasing::Enabled,

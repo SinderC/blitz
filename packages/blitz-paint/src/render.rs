@@ -44,6 +44,7 @@ use style::{
 use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
 use peniko::{self, BlendMode, Fill, ImageData, ImageSampler};
 use style::computed_values::isolation::T as Isolation;
+use style::selector_parser::PseudoElement;
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
 
@@ -1044,6 +1045,7 @@ impl ElementCx<'_, '_> {
                     transform,
                     sel_start,
                     sel_end,
+                    selection_color(self.node),
                 );
             }
 
@@ -1091,11 +1093,12 @@ impl ElementCx<'_, '_> {
 
             if self.node.is_focussed() {
                 // Render selection/caret
+                let selection_color = selection_color(self.node);
                 for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        SELECTION_COLOR,
+                        selection_color,
                         None,
                         &convert_rect(rect),
                         AntiAliasing::Enabled,
@@ -1546,4 +1549,18 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
     };
 
     CssBox::new(border_box, border, padding, outline_width, border_radii)
+}
+
+/// The background of selected text in `node`: its `::selection` style's
+/// `background-color`, or [`SELECTION_COLOR`] when it sets none.
+fn selection_color(node: &Node) -> Color {
+    let data = node.stylo_element_data();
+    data.get()
+        .and_then(|data| {
+            let style = data.styles.pseudos.get(&PseudoElement::Selection)?;
+            let color = style.get_background_color();
+            (*color != GenericColor::TRANSPARENT_BLACK)
+                .then(|| color.resolve_to_absolute(&style.clone_color()).as_srgb_color())
+        })
+        .unwrap_or(SELECTION_COLOR)
 }
