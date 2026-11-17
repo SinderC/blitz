@@ -1552,8 +1552,14 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
 }
 
 /// The background of selected text in `node`: its `::selection` style's
-/// `background-color`, or [`SELECTION_COLOR`] when it sets none.
-fn selection_color(node: &Node) -> Color {
+/// `background-color`, or [`SELECTION_COLOR`] when it sets none. An anonymous block
+/// has no styles of its own, so its text takes its parent element's.
+fn selection_color(mut node: &Node) -> Color {
+    while node.is_anonymous()
+        && let Some(parent) = node.parent
+    {
+        node = node.with(parent);
+    }
     let data = node.stylo_element_data();
     data.get()
         .and_then(|data| {
