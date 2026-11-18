@@ -48,6 +48,12 @@ impl ImageCache {
         Some(&entry.image)
     }
 
+    /// The image at `url`, if cached, without counting it as a use.
+    #[cfg(feature = "svg")]
+    pub(crate) fn peek(&self, url: &str) -> Option<&ImageData> {
+        self.images.get(url).map(|entry| &entry.image)
+    }
+
     /// Keeps `image` as the one at `url`, dropping the least recently used images
     /// while the cache is over its size. An image larger than the whole cache isn't
     /// kept.
