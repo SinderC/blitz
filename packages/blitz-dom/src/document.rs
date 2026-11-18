@@ -3901,16 +3901,20 @@ mod animation_start_tests {
     use crate::{Attribute, qual_name};
     use blitz_traits::shell::ColorScheme;
 
-    /// `<html><body><div>` with a 1 s linear `fade` animation on `div.fade`, and a 1 s
-    /// linear opacity transition on `div`.
+    /// A 60 Hz frame, as `resolve_stylist` takes the frame before.
+    const FRAME: f64 = 1.0 / 60.0;
+
+    /// `<html><body><div>` with a 1 s linear `fade` animation on `div.fade`, 2 s on
+    /// `div.fade.long`, and a 1 s linear opacity transition on `div.t`.
     fn make_doc() -> (BaseDocument, NodeId) {
         let mut doc = BaseDocument::new(DocumentConfig {
             viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
             ..Default::default()
         });
         doc.add_user_agent_stylesheet(UserAgentStylesheet::parse(
-            "div { transition: opacity 1s linear; }
-             div.fade { animation: fade 1s linear; }
+            "div.fade { animation: fade 1s linear; }
+             div.fade.long { animation-duration: 2s; }
+             div.t { transition: opacity 1s linear; }
              div.faint { opacity: 0; }
              @keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
         ));
@@ -3939,28 +3943,74 @@ mod animation_start_tests {
         doc.mutate().set_attribute(id, qual_name!("class"), class);
     }
 
-    #[test]
-    fn an_animation_starts_on_the_frame_after_the_one_it_was_made_in() {
-        let (mut doc, div) = make_doc();
-        set_class(&mut doc, div, "fade");
-        // A slow frame: the next comes 0.6 s later, and the animation starts then.
-        doc.resolve(2.0);
-        assert_eq!(opacity(&doc, div), 0.0);
-        doc.resolve(2.6);
-        assert_eq!(opacity(&doc, div), 0.0);
-        doc.resolve(3.1);
-        assert!((opacity(&doc, div) - 0.5).abs() < 1e-3);
+    fn assert_near(actual: f32, expected: f64) {
+        assert!(
+            (f64::from(actual) - expected).abs() < 1e-3,
+            "{actual} is not {expected}"
+        );
     }
 
     #[test]
-    fn a_transition_starts_on_the_frame_after_the_one_it_was_made_in() {
+    fn an_animation_starts_as_the_frame_that_made_it_ends() {
         let (mut doc, div) = make_doc();
-        set_class(&mut doc, div, "faint");
+        set_class(&mut doc, div, "fade");
+        // A slow frame: the next comes 0.6 s later, and the animation started a frame
+        // before it.
         doc.resolve(2.0);
-        assert_eq!(opacity(&doc, div), 1.0);
+        assert_near(opacity(&doc, div), 0.0);
         doc.resolve(2.6);
-        assert_eq!(opacity(&doc, div), 1.0);
+        assert_near(opacity(&doc, div), FRAME);
         doc.resolve(3.1);
-        assert!((opacity(&doc, div) - 0.5).abs() < 1e-3);
+        assert_near(opacity(&doc, div), 0.5 + FRAME);
+    }
+
+    #[test]
+    fn a_transition_starts_as_the_frame_that_made_it_ends() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "t faint");
+        doc.resolve(2.0);
+        assert_near(opacity(&doc, div), 1.0);
+        doc.resolve(2.6);
+        assert_near(opacity(&doc, div), 1.0 - FRAME);
+        doc.resolve(3.1);
+        assert_near(opacity(&doc, div), 0.5 - FRAME);
+    }
+
+    #[test]
+    fn after_a_quick_frame_an_animation_keeps_its_time() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "fade");
+        doc.resolve(2.0);
+        doc.resolve(2.01);
+        doc.resolve(2.5);
+        assert_near(opacity(&doc, div), 0.5);
+    }
+
+    #[test]
+    fn a_running_animation_that_changes_keeps_its_start() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "fade");
+        doc.resolve(2.0);
+        doc.resolve(2.1);
+        let start = 2.1 - FRAME;
+        set_class(&mut doc, div, "fade long");
+        doc.resolve(2.6);
+        assert_near(opacity(&doc, div), (2.6 - start) / 2.0);
+        doc.resolve(2.8);
+        assert_near(opacity(&doc, div), (2.8 - start) / 2.0);
+    }
+
+    #[test]
+    fn a_transition_retargeted_every_slow_frame_still_moves() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "t");
+        let mut time = 2.0;
+        for target in ["0.9", "0.8", "0.7", "0.6"] {
+            doc.mutate().set_style_property(div, "opacity", target);
+            doc.resolve(time);
+            time += 0.1;
+        }
+        doc.resolve(time);
+        assert!(opacity(&doc, div) < 0.99, "{}", opacity(&doc, div));
     }
 }
