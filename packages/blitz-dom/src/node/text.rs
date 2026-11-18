@@ -1046,6 +1046,19 @@ mod tests {
         );
     }
 
+    /// Backspace, as the platform sends it: on macOS, as a standard key binding.
+    fn backspace(input: &mut TextInputData) {
+        #[cfg(target_os = "macos")]
+        input.apply_apple_standard_keybinding(
+            &mut FontContext::new(),
+            &mut LayoutContext::new(),
+            &blitz_traits::shell::DummyShellProvider,
+            "deleteBackward:",
+        );
+        #[cfg(not(target_os = "macos"))]
+        press(input, Key::Named(NamedKey::Backspace), Modifiers::empty());
+    }
+
     fn typed(input: &mut TextInputData, text: &str) {
         for c in text.chars() {
             press(input, Key::Character(c.to_string()), Modifiers::empty());
@@ -1061,11 +1074,7 @@ mod tests {
         assert_eq!(input.value(), "pässword");
         assert_eq!(input.editor.raw_text(), "••••••••");
 
-        press(
-            &mut input,
-            Key::Named(NamedKey::Backspace),
-            Modifiers::empty(),
-        );
+        backspace(&mut input);
         assert_eq!(input.value(), "pässwor");
         // In the middle: before "w", then a paste there.
         for _ in 0..3 {
@@ -1083,11 +1092,7 @@ mod tests {
             BlitzImeEvent::Commit("W•".into()),
         );
         assert_eq!(input.value(), "pässW•or");
-        press(
-            &mut input,
-            Key::Named(NamedKey::Backspace),
-            Modifiers::empty(),
-        );
+        backspace(&mut input);
         assert_eq!(input.value(), "pässWor");
         typed(&mut input, "x");
         assert_eq!(input.value(), "pässWxor");
