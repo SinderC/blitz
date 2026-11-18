@@ -215,6 +215,8 @@ fn anonymous_text_tracks_intermediate_transition_frames() {
     assert_eq!(color(&doc, before[0]), [0, 0, 0]);
     hover(&mut doc, "#owner");
     doc.resolve(0.0);
+    // A quick frame: the transition starts as the one that made it ends, at 0.
+    doc.resolve(1.0 / 60.0);
     doc.resolve(0.5);
     let halfway = color(&doc, owner);
     assert!(halfway[0] > 0 && halfway[0] < 255, "{halfway:?}");
