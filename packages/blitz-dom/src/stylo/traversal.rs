@@ -52,13 +52,17 @@ impl crate::document::BaseDocument {
             .flush(&guards)
             .process_style(root, Some(&self.snapshots));
 
-        // Animations and transitions the last resolve started begin now, on the frame
-        // after the one they were made in, as a browser starts them once their first
-        // frame is painted. That frame may take long, as one that builds much of the
-        // page: timed from its start, they would be mostly over by the next. A resolve
-        // outside the frames, as a script's at time 0, starts none.
+        // Animations and transitions the last resolve made begin as the frame that
+        // made them was painted, as a browser starts them: about a frame before this
+        // one. That frame may take long, as one that builds much of the page: timed
+        // from its start, they would be mostly over by the next. After a quick frame
+        // they keep their time, so a transition retargeted every frame still moves.
+        // Only those still waiting to start move: Stylo also marks new a running
+        // animation it updated, as for a changed duration, and that one keeps its
+        // time. A resolve whose time doesn't advance, as a script's at 0, moves none.
+        const FRAME: f64 = 1.0 / 60.0;
         let frame_advanced = now > self.last_animation_time;
-        let since_last = now - self.last_animation_time;
+        let delay_start = (now - self.last_animation_time - FRAME).max(0.0);
         if frame_advanced {
             self.last_animation_time = now;
         }
@@ -88,7 +92,9 @@ impl crate::document::BaseDocument {
 
             for animation in set.animations.iter_mut() {
                 if frame_advanced && animation.is_new {
-                    animation.started_at += since_last;
+                    if animation.state == AnimationState::Pending {
+                        animation.started_at += delay_start;
+                    }
                     animation.is_new = false;
                 }
                 if animation.state == AnimationState::Pending && animation.started_at <= now {
@@ -103,7 +109,9 @@ impl crate::document::BaseDocument {
 
             for transition in set.transitions.iter_mut() {
                 if frame_advanced && transition.is_new {
-                    transition.start_time += since_last;
+                    if transition.state == AnimationState::Pending {
+                        transition.start_time += delay_start;
+                    }
                     transition.is_new = false;
                 }
                 if transition.state == AnimationState::Pending && transition.start_time <= now {
