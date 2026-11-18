@@ -292,6 +292,9 @@ pub struct BaseDocument {
     // TODO: collapse animating state into a bitflags
     /// Whether there are active CSS animations/transitions (so we should re-render every frame)
     pub(crate) has_active_animations: bool,
+    /// The animation time of the last style resolve, which started the animations and
+    /// transitions still marked new. The next resolve starts their clocks at its own time.
+    pub(crate) last_animation_time: f64,
     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
     pub(crate) has_canvas: bool,
     /// Whether there are subdocuments that are animating (so we should re-render every frame)
@@ -491,6 +494,7 @@ impl BaseDocument {
             active_node_id: None,
             mousedown_node_id: None,
             has_active_animations: false,
+            last_animation_time: 0.0,
             subdoc_is_animating: false,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
@@ -3792,5 +3796,75 @@ mod change_tracking_tests {
         doc.clear_changes();
         doc.clear_focus();
         assert!(doc.has_changes());
+    }
+}
+
+#[cfg(test)]
+mod animation_start_tests {
+    use super::*;
+    use crate::{Attribute, qual_name};
+    use blitz_traits::shell::ColorScheme;
+
+    /// `<html><body><div>` with a 1 s linear `fade` animation on `div.fade`, and a 1 s
+    /// linear opacity transition on `div`.
+    fn make_doc() -> (BaseDocument, NodeId) {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        doc.add_user_agent_stylesheet(UserAgentStylesheet::parse(
+            "div { transition: opacity 1s linear; }
+             div.fade { animation: fade 1s linear; }
+             div.faint { opacity: 0; }
+             @keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
+        ));
+        let root_id = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![]);
+        let body = mutator.create_element(qual_name!("body"), vec![]);
+        let div = mutator.create_element(qual_name!("div"), Vec::<Attribute>::new());
+        mutator.append_children(body, &[div]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(1.0);
+        (doc, div)
+    }
+
+    fn opacity(doc: &BaseDocument, id: NodeId) -> f32 {
+        doc.nodes[id]
+            .primary_styles()
+            .unwrap()
+            .get_effects()
+            .opacity
+    }
+
+    fn set_class(doc: &mut BaseDocument, id: NodeId, class: &str) {
+        doc.mutate().set_attribute(id, qual_name!("class"), class);
+    }
+
+    #[test]
+    fn an_animation_starts_on_the_frame_after_the_one_it_was_made_in() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "fade");
+        // A slow frame: the next comes 0.6 s later, and the animation starts then.
+        doc.resolve(2.0);
+        assert_eq!(opacity(&doc, div), 0.0);
+        doc.resolve(2.6);
+        assert_eq!(opacity(&doc, div), 0.0);
+        doc.resolve(3.1);
+        assert!((opacity(&doc, div) - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_transition_starts_on_the_frame_after_the_one_it_was_made_in() {
+        let (mut doc, div) = make_doc();
+        set_class(&mut doc, div, "faint");
+        doc.resolve(2.0);
+        assert_eq!(opacity(&doc, div), 1.0);
+        doc.resolve(2.6);
+        assert_eq!(opacity(&doc, div), 1.0);
+        doc.resolve(3.1);
+        assert!((opacity(&doc, div) - 0.5).abs() < 1e-3);
     }
 }

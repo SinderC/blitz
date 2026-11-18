@@ -52,6 +52,17 @@ impl crate::document::BaseDocument {
             .flush(&guards)
             .process_style(root, Some(&self.snapshots));
 
+        // Animations and transitions the last resolve started begin now, on the frame
+        // after the one they were made in, as a browser starts them once their first
+        // frame is painted. That frame may take long, as one that builds much of the
+        // page: timed from its start, they would be mostly over by the next. A resolve
+        // outside the frames, as a script's at time 0, starts none.
+        let frame_advanced = now > self.last_animation_time;
+        let since_last = now - self.last_animation_time;
+        if frame_advanced {
+            self.last_animation_time = now;
+        }
+
         // Mark actively animating nodes as dirty
         let mut sets = self.animations.sets.write();
         for (key, set) in sets.iter_mut() {
@@ -76,6 +87,10 @@ impl crate::document::BaseDocument {
             self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
 
             for animation in set.animations.iter_mut() {
+                if frame_advanced && animation.is_new {
+                    animation.started_at += since_last;
+                    animation.is_new = false;
+                }
                 if animation.state == AnimationState::Pending && animation.started_at <= now {
                     animation.state = AnimationState::Running;
                 }
@@ -87,6 +102,10 @@ impl crate::document::BaseDocument {
             }
 
             for transition in set.transitions.iter_mut() {
+                if frame_advanced && transition.is_new {
+                    transition.start_time += since_last;
+                    transition.is_new = false;
+                }
                 if transition.state == AnimationState::Pending && transition.start_time <= now {
                     transition.state = AnimationState::Running;
                 }
@@ -146,12 +165,6 @@ impl crate::document::BaseDocument {
         let mut sets = self.animations.sets.write();
         for set in sets.values_mut() {
             set.clear_canceled_animations();
-            for animation in set.animations.iter_mut() {
-                animation.is_new = false;
-            }
-            for transition in set.transitions.iter_mut() {
-                transition.is_new = false;
-            }
         }
         let mut finished = Vec::new();
         sets.retain(|key, state| {
