@@ -37,6 +37,7 @@ impl ElementCx<'_, '_> {
                 self.style.clone_color().as_srgb_color(),
                 None,
                 &path,
+                AntiAliasing::Enabled,
             );
             return;
         }

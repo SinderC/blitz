@@ -1,5 +1,5 @@
 use crate::color::ToColorColor;
-use anyrender::{PaintScene, Scene};
+use anyrender::{AntiAliasing, PaintScene, Scene};
 use blitz_dom::{BaseDocument, CopyStyleGetters};
 use kurbo::{Affine, Rect, Vec2};
 use parley::layout::PositionedLayoutItem;
@@ -39,6 +39,7 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
         AlphaColor::from_rgba8(0, 0, 0, 35),
         None,
         &(frame + Vec2::new(2.0, 3.0)),
+        AntiAliasing::Enabled,
     );
     scene.fill(
         Fill::NonZero,
@@ -46,6 +47,7 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
         AlphaColor::from_rgb8(140, 140, 140),
         None,
         &frame,
+        AntiAliasing::Enabled,
     );
     // As Chromium does, the list takes its colors from the options' own styles, then
     // the select's, so a page's dark theme reaches it; without either, black on white.
@@ -71,6 +73,7 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
         background,
         None,
         &frame.inset(-1.0),
+        AntiAliasing::Enabled,
     );
     let select_color = doc
         .get_node(overlay.select)
@@ -108,6 +111,7 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
                 AlphaColor::from_rgb8(38, 98, 190),
                 None,
                 &rect,
+                AntiAliasing::Enabled,
             );
         }
         let text_transform = transform
@@ -135,6 +139,7 @@ fn paint_select_overlay(scene: &mut impl PaintScene, doc: &mut BaseDocument, sca
                             x: g.x,
                             y: g.y,
                         }),
+                        AntiAliasing::Enabled,
                     );
                 }
             }
