@@ -692,6 +692,22 @@ fn update_focus_for_press(
     generate_focus_events(doc, &mut |doc| doc.clear_focus(), dispatch_event);
 }
 
+/// Whether a link with `target`, in a document `depth` frames deep, leaves its
+/// frame, so that the top-level document navigates (or opens the URL elsewhere).
+/// `_self` and no target stay. `_parent` leaves a frame whose parent is the
+/// top-level document; deeper frames can't navigate their parent yet, so it stays
+/// there. `_top`, `_blank` and any other name leave: Blitz has no named frames,
+/// and a name that matches none opens a new top-level browsing context.
+fn link_target_leaves_frame(depth: usize, target: &str) -> bool {
+    if target.is_empty() || target.eq_ignore_ascii_case("_self") {
+        false
+    } else if target.eq_ignore_ascii_case("_parent") {
+        depth == 1
+    } else {
+        true
+    }
+}
+
 pub(crate) fn handle_click(
     doc: &mut BaseDocument,
     target: NodeId,
@@ -847,13 +863,9 @@ pub(crate) fn handle_click(
                             if url.fragment().is_some() && doc.url.is_same_document(&url) {
                                 doc.scroll_to_fragment(url.fragment().unwrap_or_default());
                             } else {
-                                // `_blank` and `_top` leave an iframe: the top-level
-                                // document navigates (or opens the URL elsewhere).
                                 let leaves_frame =
                                     el.attr(local_name!("target")).is_some_and(|target| {
-                                        let target = target.trim();
-                                        target.eq_ignore_ascii_case("_blank")
-                                            || target.eq_ignore_ascii_case("_top")
+                                        link_target_leaves_frame(doc.subdocument_depth, target)
                                     });
                                 let provider = match &doc.top_navigation_provider {
                                     Some(top) if leaves_frame => top,
