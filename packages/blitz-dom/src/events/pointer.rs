@@ -956,28 +956,12 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
             let (x, y) = (x * 60.0, y * 60.0);
             let hovered = doc.get_hover_node_id();
             let anchor = doc.wheel_scroller(hovered, x, y);
-            // More notches while one glides add to it; the other way drops what is left.
-            // A glide under way keeps the time of its last frame, so the next frame
-            // moves it for the whole frame. Starting the clock again at each event made
-            // a stream of small ones, a Windows touchpad's, move each frame by however
-            // long ago the last event came, or not at all.
-            let (left_x, left_y, last_time) = match &doc.scroll_animation {
-                ScrollAnimationState::Wheel(w) if w.target == anchor => (w.x, w.y, w.last_time),
-                _ => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64 as f64;
-                    (0.0, 0.0, now)
-                }
+            let glide = match &doc.scroll_animation {
+                ScrollAnimationState::Wheel(w) => Some(w),
+                _ => None,
             };
-            let keep = |left: f64, new: f64| if left * new < 0.0 { 0.0 } else { left };
-            doc.scroll_animation = ScrollAnimationState::Wheel(WheelState {
-                target: anchor,
-                x: keep(left_x, x) + x,
-                y: keep(left_y, y) + y,
-                last_time,
-            });
+            let glide = WheelState::add(glide, anchor, x, y, WheelState::now_ms());
+            doc.scroll_animation = ScrollAnimationState::Wheel(glide);
             doc.shell_provider.request_redraw();
             return;
         }

@@ -115,6 +115,75 @@ pub(crate) struct WheelState {
     pub(crate) last_time: f64,
 }
 
+impl WheelState {
+    /// Time constant of a wheel scroll's ease-out, in milliseconds: it covers about 90% of
+    /// a notch in twice this.
+    const EASE_MS: f64 = 70.0;
+
+    /// The most time one step moves the glide for: a 15 fps frame, so a slow machine's
+    /// frames still glide on time. A longer gap, frames held back while the window was
+    /// hidden or a stylesheet loaded, or the clock set forward, would otherwise land what
+    /// is left in one jump.
+    const MAX_STEP_MS: f64 = 1000.0 / 15.0;
+
+    /// The time now, in milliseconds since the Unix epoch, to the microsecond: whole
+    /// milliseconds made 120 and 144 Hz frames 6 and 7 ms by turns, and uneven steps.
+    pub(crate) fn now_ms() -> f64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0
+    }
+
+    /// `glide`, the glide under way, with a wheel event's `x` and `y` on `target` added
+    /// at `now`. More notches while one glides add to it; the other way drops what is
+    /// left, and another target starts afresh.
+    ///
+    /// A glide under way keeps the time of its last step, so the next frame moves it for
+    /// the whole frame. Starting the clock again at each event made a stream of small
+    /// ones, a Windows touchpad's, move each frame by however long ago the last event
+    /// came, or not at all.
+    pub(crate) fn add(
+        glide: Option<&WheelState>,
+        target: Option<NodeId>,
+        x: f64,
+        y: f64,
+        now: f64,
+    ) -> WheelState {
+        let (left_x, left_y, last_time) = match glide {
+            Some(w) if w.target == target => (w.x, w.y, w.last_time),
+            _ => (0.0, 0.0, now),
+        };
+        let keep = |left: f64, new: f64| if left * new < 0.0 { 0.0 } else { left };
+        WheelState {
+            target,
+            x: keep(left_x, x) + x,
+            y: keep(left_y, y) + y,
+            last_time,
+        }
+    }
+
+    /// Takes the step of a frame at `now` off what is left, and returns it, and whether
+    /// the glide has finished. An exponential ease-out: each frame covers a share of
+    /// what is left that depends on the frame's length, so the glide takes as long at
+    /// 15 fps as at 144.
+    pub(crate) fn step(&mut self, now: f64) -> (f64, f64, bool) {
+        let elapsed = (now - self.last_time).clamp(0.0, Self::MAX_STEP_MS);
+        let share = 1.0 - (-elapsed / Self::EASE_MS).exp();
+        let finished = self.x.abs() < 0.5 && self.y.abs() < 0.5;
+        let (dx, dy) = if finished {
+            (self.x, self.y)
+        } else {
+            (self.x * share, self.y * share)
+        };
+        self.x -= dx;
+        self.y -= dy;
+        self.last_time = now;
+        (dx, dy, finished)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ScrollAnimationState {
     None,
@@ -465,10 +534,6 @@ impl BaseDocument {
     /// Duration (in milliseconds) of an animated scroll.
     const SMOOTH_SCROLL_DURATION_MS: f64 = 300.0;
 
-    /// Time constant of a wheel scroll's ease-out, in milliseconds: it covers about 90% of
-    /// a notch in twice this.
-    const WHEEL_EASE_MS: f64 = 70.0;
-
     /// Returns the current, minimum and maximum scroll offsets for the given
     /// scroll target. `include_hidden` controls whether
     /// `overflow: hidden` axes count as scrollable (they do for programmatic scrolls,
@@ -808,24 +873,7 @@ impl BaseDocument {
                 }
             }
             ScrollAnimationState::Wheel(wheel) => {
-                let time_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64 as f64;
-                // Exponential ease-out: each frame covers a share of what is left that
-                // depends on the frame's length, so the glide takes as long at 30 fps as
-                // at 144.
-                let share =
-                    1.0 - (-(time_ms - wheel.last_time).max(0.0) / Self::WHEEL_EASE_MS).exp();
-                let finished = wheel.x.abs() < 0.5 && wheel.y.abs() < 0.5;
-                let (dx, dy) = if finished {
-                    (wheel.x, wheel.y)
-                } else {
-                    (wheel.x * share, wheel.y * share)
-                };
-                wheel.x -= dx;
-                wheel.y -= dy;
-                wheel.last_time = time_ms;
+                let (dx, dy, finished) = wheel.step(WheelState::now_ms());
                 let target = wheel.target;
                 if target.is_some_and(|id| self.nodes.get(id).is_none()) {
                     self.scroll_animation = ScrollAnimationState::None;
@@ -875,5 +923,95 @@ impl BaseDocument {
                 // Do nothing
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WheelState;
+    use blitz_traits::node_id::NodeId;
+
+    /// The share of what is left a step of `ms` covers.
+    fn share(ms: f64) -> f64 {
+        1.0 - (-ms / WheelState::EASE_MS).exp()
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn events_during_a_glide_keep_its_clock() {
+        // A touchpad's small events, faster than frames: each frame still moves the
+        // glide for the whole frame, not for the time since the last event.
+        let mut glide = WheelState::add(None, None, 0.0, 6.0, 1000.0);
+        glide.step(1000.0);
+        for time in [1003.0, 1005.0, 1007.0] {
+            glide = WheelState::add(Some(&glide), None, 0.0, 6.0, time);
+        }
+        assert_eq!(glide.last_time, 1000.0);
+        let left = glide.y;
+        let (_, dy, finished) = glide.step(1008.0);
+        assert!(!finished);
+        assert!(close(dy, left * share(8.0)));
+    }
+
+    #[test]
+    fn a_new_glide_starts_its_clock_now() {
+        let glide = WheelState::add(None, None, 0.0, 60.0, 5000.0);
+        assert_eq!((glide.y, glide.last_time), (60.0, 5000.0));
+
+        // Another scroller, or the other way, drops what is left.
+        let other = WheelState::add(Some(&glide), Some(NodeId::from_u64(1)), 0.0, 60.0, 5100.0);
+        assert_eq!((other.y, other.last_time), (60.0, 5100.0));
+        let back = WheelState::add(Some(&glide), None, 0.0, -60.0, 5100.0);
+        assert_eq!((back.y, back.last_time), (-60.0, 5000.0));
+    }
+
+    #[test]
+    fn a_long_gap_moves_a_frame_at_most() {
+        // Frames held back, the window hidden: the glide goes on where it was instead
+        // of landing in one jump.
+        let mut glide = WheelState::add(None, None, 0.0, 180.0, 0.0);
+        let (_, dy, _) = glide.step(10_000.0);
+        assert!(close(dy, 180.0 * share(WheelState::MAX_STEP_MS)));
+        assert!(glide.y > 60.0);
+
+        // A clock set back moves nothing.
+        let (_, dy, _) = glide.step(5_000.0);
+        assert_eq!(dy, 0.0);
+    }
+
+    #[test]
+    fn slow_frames_glide_on_time() {
+        // 20 fps, a low-power machine's: each frame moves the glide for all 50 ms.
+        let mut glide = WheelState::add(None, None, 0.0, 60.0, 0.0);
+        let (_, dy, _) = glide.step(50.0);
+        assert!(close(dy, 60.0 * share(50.0)));
+    }
+
+    #[test]
+    fn a_step_takes_the_same_share_of_each_frame() {
+        // 144 Hz frames, 6.94 ms each: the same share of what is left each time.
+        let mut glide = WheelState::add(None, None, 0.0, 60.0, 0.0);
+        let frame = 1000.0 / 144.0;
+        let (_, first, _) = glide.step(frame);
+        let left = glide.y;
+        let (_, second, _) = glide.step(2.0 * frame);
+        assert!(close(first / 60.0, second / left));
+        assert!(close(first / 60.0, share(frame)));
+    }
+
+    #[test]
+    fn the_clock_counts_fractions_of_a_millisecond() {
+        // Whole milliseconds made 144 Hz frames 6 and 7 ms by turns.
+        assert!((0..1000).any(|_| WheelState::now_ms().fract() != 0.0));
+    }
+
+    #[test]
+    fn the_last_half_pixel_finishes_the_glide() {
+        let mut glide = WheelState::add(None, None, 0.0, 0.4, 0.0);
+        assert_eq!(glide.step(16.0), (0.0, 0.4, true));
+        assert_eq!(glide.y, 0.0);
     }
 }
