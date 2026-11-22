@@ -154,10 +154,18 @@ pub fn walk_tree(indent: usize, node: &Node) {
 }
 
 /// Parse an SVG image.
+///
+/// An `<image href>` loads only from a `data:` URL. usvg's default resolver reads any
+/// other href as a file path, outside the document's net provider, so an SVG from a
+/// page could read local files, devices or (on Windows) UNC paths.
 #[cfg(feature = "svg")]
 pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
     let options = usvg::Options {
         fontdb: Arc::clone(&*FONT_DB),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
         ..Default::default()
     };
     crate::node::SvgImageData::from_data(source, &options)
@@ -180,6 +188,51 @@ impl ToColorColor for AbsoluteColor {
 #[cfg(all(test, feature = "svg"))]
 mod svg_tests {
     use super::parse_svg_image;
+
+    // A 1x1 PNG.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn image_count(href: &str) -> usize {
+        let src = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="{href}" width="10" height="10"/></svg>"#
+        );
+        fn count(group: &usvg::Group) -> usize {
+            group
+                .children()
+                .iter()
+                .map(|node| match node {
+                    usvg::Node::Image(_) => 1,
+                    usvg::Node::Group(group) => count(group),
+                    _ => 0,
+                })
+                .sum()
+        }
+        count(parse_svg_image(src.as_bytes()).unwrap().tree.root())
+    }
+
+    #[test]
+    fn image_href_with_a_file_path_loads_nothing() {
+        // The file exists and is a valid PNG, so only the resolver keeps it out.
+        let path = std::env::temp_dir().join(format!("blitz-svg-href-{}.png", std::process::id()));
+        std::fs::write(&path, PNG).unwrap();
+        let count = image_count(path.to_str().unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(image_count(r"\\example.invalid\s\a.png"), 0);
+    }
+
+    #[test]
+    fn image_href_with_a_data_url_loads() {
+        // The same PNG as `PNG`.
+        let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        assert_eq!(image_count(&format!("data:image/png;base64,{data}")), 1);
+    }
 
     #[test]
     fn svg_without_xmlns_parses() {
