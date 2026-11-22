@@ -178,14 +178,21 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
                 if is_gzip(&data) {
                     return None;
                 }
-                // A raster is decoded when the SVG is painted, so it is held to the
-                // same size as the page's own images.
-                if image::guess_format(&data).is_ok()
-                    && crate::net::check_image_size(&data, crate::net::MAX_IMAGE_BYTES).is_err()
-                {
-                    return None;
-                }
-                default_data(mime, data, options)
+                // A raster is decoded when the SVG is painted, in the format usvg
+                // picked here from the MIME type or the data, so it is held to the
+                // same size as the page's own images, read in that same format.
+                let kind = default_data(mime, data, options)?;
+                let (format, data) = match &kind {
+                    usvg::ImageKind::JPEG(data) => (image::ImageFormat::Jpeg, data),
+                    usvg::ImageKind::PNG(data) => (image::ImageFormat::Png, data),
+                    usvg::ImageKind::GIF(data) => (image::ImageFormat::Gif, data),
+                    usvg::ImageKind::WEBP(data) => (image::ImageFormat::WebP, data),
+                    usvg::ImageKind::SVG(_) => return Some(kind),
+                };
+                let reader =
+                    image::ImageReader::with_format(std::io::Cursor::new(data.as_slice()), format);
+                crate::net::check_image_size(reader, crate::net::MAX_IMAGE_BYTES).ok()?;
+                Some(kind)
             }),
             resolve_string: Box::new(|_, _| None),
         },
@@ -272,6 +279,20 @@ mod svg_tests {
         // A PNG header, with no pixels, for 22000 by 22000 grayscale: 1.9 GB as RGBA.
         let data = "iVBORw0KGgoAAAANSUhEUgAAVfAAAFXwCAAAAABjOgE4AAAACElEQVR4nAMAAAAAAUgGidIAAAAASUVORK5CYII=";
         assert_eq!(image_count(&format!("data:image/png;base64,{data}")), 0);
+    }
+
+    #[test]
+    fn image_href_with_a_jpeg_loads() {
+        // Each raster is checked in the format usvg picked, so a JPEG reads as one.
+        let mut jpeg = Vec::new();
+        image::GrayImage::new(8, 8)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let data: String = jpeg.iter().map(|b| format!("%{b:02X}")).collect();
+        assert_eq!(image_count(&format!("data:image/jpeg,{data}")), 1);
     }
 
     #[test]

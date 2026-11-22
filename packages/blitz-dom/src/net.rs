@@ -612,11 +612,15 @@ fn reader(bytes: &[u8]) -> image::ImageReader<Cursor<&[u8]>> {
         .expect("IO errors impossible with Cursor")
 }
 
-/// Refuses `bytes`, from its header alone, if decoding it would take more than
-/// `max` bytes, as 8-bit RGBA or in the decoder's own format.
-pub(crate) fn check_image_size(bytes: &[u8], max: u64) -> image::ImageResult<()> {
+/// Refuses the image `reader` reads, from its header alone, if decoding it would
+/// take more than `max` bytes, as 8-bit RGBA or in the decoder's own format. Any
+/// header it can't read is refused too.
+pub(crate) fn check_image_size(
+    reader: image::ImageReader<Cursor<&[u8]>>,
+    max: u64,
+) -> image::ImageResult<()> {
     use image::ImageDecoder as _;
-    let decoder = reader(bytes).into_decoder()?;
+    let decoder = reader.into_decoder()?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) * 4 > max || decoder.total_bytes() > max {
         return Err(image::ImageError::Limits(
@@ -626,10 +630,16 @@ pub(crate) fn check_image_size(bytes: &[u8], max: u64) -> image::ImageResult<()>
     Ok(())
 }
 
-/// Decodes `bytes` as an image, unless [`check_image_size`] refuses it.
+/// Decodes `bytes` as an image, unless [`check_image_size`] refuses it. The decode
+/// itself may allocate no more than `max` either: a GIF frame larger than its image
+/// takes a buffer of its own, which the header doesn't show.
 fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
-    check_image_size(bytes, max)?;
-    reader(bytes).decode()
+    check_image_size(reader(bytes), max)?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(max);
+    let mut reader = reader(bytes);
+    reader.limits(limits);
+    reader.decode()
 }
 
 impl ImageHandler {
@@ -712,8 +722,21 @@ mod tests {
         assert!(refused(&decode_image(HUGE_PNG, MAX_IMAGE_BYTES)));
         assert!(refused(&decode_image(DEEP_PNG, MAX_IMAGE_BYTES)));
         // The photo passes the check, then fails here only for its missing pixels.
-        let photo = decode_image(PHOTO_PNG, MAX_IMAGE_BYTES);
-        assert!(photo.is_err() && !refused(&photo));
+        assert!(check_image_size(reader(PHOTO_PNG), MAX_IMAGE_BYTES).is_ok());
+    }
+
+    #[test]
+    fn a_gif_frame_larger_than_its_image_is_refused() {
+        // A 1 by 1 GIF, two black colours, whose one frame is 10000 by 10000: the frame takes a 400 MB
+        // buffer of its own, which the header doesn't show.
+        let gif = [
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x10, 0x27, 0x10, 0x27,
+            0x00, 0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
+        ];
+        assert!(check_image_size(reader(&gif), MAX_IMAGE_BYTES).is_ok());
+        let error = decode_image(&gif, MAX_IMAGE_BYTES).unwrap_err();
+        assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
     }
 
     #[test]

@@ -115,5 +115,5 @@ web-time = { workspace = true }
 objc2 = { version = "0.6", features = ["disable-encoding-assertions"] }
 
 [dev-dependencies]
-# The image tests decode PNG, which the app picks as a feature.
-image = { workspace = true, features = ["png"] }
+# The image tests decode these formats, which the app picks as features.
+image = { workspace = true, features = ["png", "jpeg", "gif"] }
