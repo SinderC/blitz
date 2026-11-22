@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn an_image_too_large_to_decode_is_refused_from_its_header() {
-        // 22000 by 22000 is 1.9 GB as RGBA, from a file of 57 bytes.
+        // 22000 by 22000 is 1.9 GB as RGBA, from a file of 65 bytes.
         let error = decode_image(&png_header(22000, 22000), MAX_IMAGE_BYTES).unwrap_err();
         assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
         // A 4000 by 3000 photo passes the check, then fails here only for its
