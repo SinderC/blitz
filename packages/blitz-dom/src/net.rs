@@ -679,8 +679,9 @@ pub(crate) fn sanitize_image(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// The first byte of each segment's prefix is changed wherever it is found, so
 /// zune-jpeg skips the segment as an unknown one. That keeps every length, JPEG has
 /// no checksums, and it needs no marker walk that could disagree with zune-jpeg's.
-/// A prefix found elsewhere, as in scan data, is changed too, which can change only
-/// that image's pixels; a real image doesn't hold these strings anywhere else.
+/// A prefix found elsewhere, as in scan data or a table, is changed too, which can
+/// change only that image: its pixels, or whether it decodes. A real image doesn't
+/// hold these strings anywhere else.
 fn disarm_jpeg_metadata(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     const PREFIXES: [&[u8]; 3] = [
         b"http://ns.adobe.com/xmp/extension/\0",
