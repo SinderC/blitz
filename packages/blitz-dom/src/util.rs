@@ -195,9 +195,8 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
                     usvg::ImageKind::WEBP(data) => (image::ImageFormat::WebP, data),
                     usvg::ImageKind::SVG(_) => return Some(kind),
                 };
-                let reader =
-                    image::ImageReader::with_format(std::io::Cursor::new(data.as_slice()), format);
-                crate::net::check_image_size(reader, crate::net::MAX_IMAGE_BYTES).ok()?;
+                crate::net::check_image_size(data, Some(format), crate::net::MAX_IMAGE_BYTES)
+                    .ok()?;
                 Some(kind)
             }),
             resolve_string: Box::new(|_, _| None),
@@ -299,6 +298,33 @@ mod svg_tests {
             .unwrap();
         let data: String = jpeg.iter().map(|b| format!("%{b:02X}")).collect();
         assert_eq!(image_count(&format!("data:image/jpeg,{data}")), 1);
+    }
+
+    #[test]
+    fn image_href_with_a_png_loads_without_its_icc_profile() {
+        // A 2 by 2 grayscale PNG with an iCCP chunk.
+        let data = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAAD2lDQ1BwAAB4nGNgoAwAAABAAAECndXUAAAADklEQVR4nGNoaGBoaAAABgYCASzBUNcAAAAASUVORK5CYII=";
+        let src = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="data:image/png;base64,{data}" width="2" height="2"/></svg>"#
+        );
+        let svg = parse_svg_image(src.as_bytes()).unwrap();
+        fn pngs(group: &usvg::Group, found: &mut Vec<std::sync::Arc<Vec<u8>>>) {
+            for node in group.children() {
+                match node {
+                    usvg::Node::Image(image) => {
+                        if let usvg::ImageKind::PNG(png) = image.kind() {
+                            found.push(png.clone());
+                        }
+                    }
+                    usvg::Node::Group(group) => pngs(group, found),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        pngs(svg.tree.root(), &mut found);
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].windows(4).any(|w| w == b"iCCP"));
     }
 
     #[test]

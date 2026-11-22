@@ -612,14 +612,38 @@ fn reader(bytes: &[u8]) -> image::ImageReader<Cursor<&[u8]>> {
         .expect("IO errors impossible with Cursor")
 }
 
-/// Refuses the image `reader` reads, from its header alone, if decoding it would
-/// take more than `max` bytes, as 8-bit RGBA or in the decoder's own format. Any
-/// header it can't read is refused too.
+/// The most extended-XMP segments a JPEG may have. zune-jpeg sorts and walks all
+/// it has seen at every marker after the first, so a header read takes time in the
+/// square of their number: 80,000 of them, 6.4 MB, took 15 s.
+const MAX_JPEG_EXTENDED_XMP: usize = 64;
+
+/// Refuses the image in `bytes`, read in `format` or the one its bytes show, from
+/// its header alone, if decoding it would take more than `max` bytes, as 8-bit RGBA
+/// or in the decoder's own format. Any header it can't read is refused too, and so is
+/// a JPEG with more than [`MAX_JPEG_EXTENDED_XMP`] extended-XMP segments.
 pub(crate) fn check_image_size(
-    mut reader: image::ImageReader<Cursor<&[u8]>>,
+    bytes: &[u8],
+    format: Option<image::ImageFormat>,
     max: u64,
 ) -> image::ImageResult<()> {
     use image::ImageDecoder as _;
+    let refused = || {
+        image::ImageError::Limits(image::error::LimitError::from_kind(
+            image::error::LimitErrorKind::DimensionError,
+        ))
+    };
+    let mut reader = match format {
+        Some(format) => image::ImageReader::with_format(Cursor::new(bytes), format),
+        None => reader(bytes),
+    };
+    if reader.format() == Some(image::ImageFormat::Jpeg) {
+        // Counted anywhere in the file, so that no marker zune-jpeg finds is missed.
+        const PREFIX: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
+        let segments = bytes.windows(PREFIX.len()).filter(|w| *w == PREFIX);
+        if segments.take(MAX_JPEG_EXTENDED_XMP + 1).count() > MAX_JPEG_EXTENDED_XMP {
+            return Err(refused());
+        }
+    }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(max);
     reader.limits(limits);
@@ -629,18 +653,18 @@ pub(crate) fn check_image_size(
         .saturating_mul(u64::from(height))
         .saturating_mul(4);
     if rgba > max || decoder.total_bytes() > max {
-        return Err(image::ImageError::Limits(
-            image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
-        ));
+        return Err(refused());
     }
     Ok(())
 }
 
-/// Decodes `bytes` as an image, unless [`check_image_size`] refuses it. The decode
+/// Decodes `bytes` as an image, without a PNG's ICC profiles (see
+/// [`strip_png_iccp`]), unless [`check_image_size`] refuses it. The decode
 /// may allocate twice `max`: a GIF frame smaller or larger than its image takes a
 /// buffer of its own beside the image, which the header doesn't show.
 fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
-    check_image_size(reader(bytes), max)?;
+    let bytes = &strip_png_iccp(bytes);
+    check_image_size(bytes, None, max)?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(max.saturating_mul(2));
     let mut reader = reader(bytes);
@@ -663,7 +687,8 @@ pub(crate) fn strip_png_iccp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let mut pos = SIGNATURE.len();
     while let Some(head) = bytes.get(pos..pos + 8) {
         let len = u32::from_be_bytes(head[..4].try_into().unwrap()) as usize;
-        let Some(end) = pos.checked_add(12 + len).filter(|&end| end <= bytes.len()) else {
+        let end = pos.checked_add(12).and_then(|end| end.checked_add(len));
+        let Some(end) = end.filter(|&end| end <= bytes.len()) else {
             break;
         };
         match &head[4..] {
@@ -682,7 +707,7 @@ pub(crate) fn strip_png_iccp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
 impl ImageHandler {
     fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
-        let image_err = match decode_image(&strip_png_iccp(&bytes), MAX_IMAGE_BYTES) {
+        let image_err = match decode_image(&bytes, MAX_IMAGE_BYTES) {
             Ok(image) => {
                 let width = image.width();
                 let height = image.height();
@@ -760,7 +785,7 @@ mod tests {
         assert!(refused(&decode_image(HUGE_PNG, MAX_IMAGE_BYTES)));
         assert!(refused(&decode_image(DEEP_PNG, MAX_IMAGE_BYTES)));
         // The photo passes the check, then fails here only for its missing pixels.
-        assert!(check_image_size(reader(PHOTO_PNG), MAX_IMAGE_BYTES).is_ok());
+        assert!(check_image_size(PHOTO_PNG, None, MAX_IMAGE_BYTES).is_ok());
     }
 
     #[test]
@@ -772,7 +797,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x10, 0x27, 0x10, 0x27,
             0x00, 0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
         ];
-        assert!(check_image_size(reader(&gif), MAX_IMAGE_BYTES).is_ok());
+        assert!(check_image_size(&gif, None, MAX_IMAGE_BYTES).is_ok());
         let error = decode_image(&gif, MAX_IMAGE_BYTES).unwrap_err();
         assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
     }
@@ -811,6 +836,36 @@ mod tests {
         // A chunk running off the end stops the walk, and the rest is kept.
         let cut = &png[..png.len() - 20];
         assert_eq!(strip_png_iccp(cut).len(), cut.len() - 27);
+    }
+
+    /// A JPEG of SOI, `segments` extended-XMP segments of one never-complete XMP, and
+    /// EOI.
+    fn jpeg_with_extended_xmp(segments: u32) -> Vec<u8> {
+        let mut jpeg = vec![0xff, 0xd8];
+        for offset in 0..segments {
+            let mut payload = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
+            payload.extend_from_slice(&[b'0'; 32]); // The XMP's GUID.
+            payload.extend_from_slice(&u32::MAX.to_be_bytes()); // Its full length.
+            payload.extend_from_slice(&offset.to_be_bytes());
+            payload.push(0);
+            jpeg.extend_from_slice(&[0xff, 0xe1]);
+            jpeg.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
+            jpeg.extend_from_slice(&payload);
+        }
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        jpeg
+    }
+
+    #[test]
+    fn a_jpeg_with_too_many_extended_xmp_segments_is_refused() {
+        let at_limit = jpeg_with_extended_xmp(MAX_JPEG_EXTENDED_XMP as u32);
+        assert!(!refused(&check_image_size(
+            &at_limit,
+            None,
+            MAX_IMAGE_BYTES
+        )));
+        let over = jpeg_with_extended_xmp(MAX_JPEG_EXTENDED_XMP as u32 + 1);
+        assert!(refused(&check_image_size(&over, None, MAX_IMAGE_BYTES)));
     }
 
     #[test]
