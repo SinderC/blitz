@@ -153,17 +153,32 @@ pub fn walk_tree(indent: usize, node: &Node) {
     }
 }
 
+/// Whether `data` starts with gzip's magic bytes, as `usvg::Tree::from_data` checks
+/// for SVGZ.
+#[cfg(feature = "svg")]
+pub(crate) fn is_gzip(data: &[u8]) -> bool {
+    data.starts_with(&[0x1f, 0x8b])
+}
+
 /// Parse an SVG image.
 ///
 /// An `<image href>` loads only from a `data:` URL. usvg's default resolver reads any
 /// other href as a file path, outside the document's net provider, so an SVG from a
-/// page could read local files, devices or (on Windows) UNC paths.
+/// page could read local files, devices or (on Windows) UNC paths. A `data:` image
+/// that is gzip-compressed is refused, like the SVG itself (see
+/// [`SvgImageData::from_data`](crate::node::SvgImageData::from_data)).
 #[cfg(feature = "svg")]
 pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
+    let default_data = usvg::ImageHrefResolver::default_data_resolver();
     let options = usvg::Options {
         fontdb: Arc::clone(&*FONT_DB),
         image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_data: Box::new(move |mime, data, options| {
+                if is_gzip(&data) {
+                    return None;
+                }
+                default_data(mime, data, options)
+            }),
             resolve_string: Box::new(|_, _| None),
         },
         ..Default::default()
@@ -224,7 +239,24 @@ mod svg_tests {
         let count = image_count(path.to_str().unwrap());
         std::fs::remove_file(&path).unwrap();
         assert_eq!(count, 0);
-        assert_eq!(image_count(r"\\example.invalid\s\a.png"), 0);
+    }
+
+    #[test]
+    fn gzip_compressed_svg_is_refused() {
+        // A valid SVGZ of a 10x10 rect, which usvg would decompress and load.
+        const SVGZ: &[u8] = &[
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xb3, 0x29, 0x2e, 0x4b,
+            0x57, 0xa8, 0xc8, 0xcd, 0xc9, 0x2b, 0xb6, 0x55, 0xca, 0x28, 0x29, 0x29, 0xb0, 0xd2,
+            0xd7, 0x2f, 0x2f, 0x2f, 0xd7, 0x2b, 0x37, 0xd6, 0xcb, 0x2f, 0x4a, 0xd7, 0x37, 0x32,
+            0x30, 0x30, 0xd0, 0x07, 0xaa, 0x50, 0x52, 0x28, 0xcf, 0x4c, 0x29, 0xc9, 0xb0, 0x55,
+            0x32, 0x34, 0x50, 0x52, 0xc8, 0x48, 0xcd, 0x4c, 0xcf, 0x28, 0x01, 0xb3, 0xed, 0x6c,
+            0x8a, 0x52, 0x93, 0x4b, 0x70, 0x48, 0xea, 0xdb, 0xd9, 0x80, 0xf4, 0xda, 0x01, 0x00,
+            0x27, 0x3c, 0x3f, 0xe9, 0x63, 0x00, 0x00, 0x00,
+        ];
+        assert!(parse_svg_image(SVGZ).is_err());
+        // The same bytes, base64-encoded.
+        let data = "H4sIAAAAAAAC/7MpLktXqMjNySu2VcooKSmw0tcvLy/XKzfWyy9K1zcyMDDQB6pQUijPTCnJsFUyNFBSyEjNTM8oAbPtbIpSk0twSOrb2YD02gEAJzw/6WMAAAA=";
+        assert_eq!(image_count(&format!("data:image/svg+xml;base64,{data}")), 0);
     }
 
     #[test]

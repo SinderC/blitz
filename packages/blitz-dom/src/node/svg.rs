@@ -87,18 +87,11 @@ impl SvgImageData {
     /// [`usvg::Tree`] and the declared root dimensions from a single XML
     /// parse.
     ///
-    /// Like [`usvg::Tree::from_data`], gzip-compressed data (SVGZ) is
-    /// decompressed first.
+    /// Unlike [`usvg::Tree::from_data`], gzip-compressed data (SVGZ) is not
+    /// decompressed, so it fails as not UTF-8. Browsers decompress it only under an
+    /// HTTP `Content-Encoding`, and usvg would decompress it with no limit, so a few
+    /// megabytes could expand to gigabytes.
     pub fn from_data(data: &[u8], options: &usvg::Options) -> Result<Self, usvg::Error> {
-        // Gzip magic bytes, matching the SVGZ detection in `usvg::Tree::from_data`.
-        let decompressed;
-        let data = if data.starts_with(&[0x1f, 0x8b]) {
-            decompressed = usvg::decompress_svgz(data)?;
-            decompressed.as_slice()
-        } else {
-            data
-        };
-
         let text = std::str::from_utf8(data).map_err(|_| usvg::Error::NotAnUtf8Str)?;
         let xml_options = roxmltree::ParsingOptions {
             allow_dtd: true,
