@@ -27,7 +27,8 @@ const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/2010010
 const PER_HOST_MAX_CONCURRENT: usize = 6;
 /// The largest response body read, in bytes. A larger one fails, and is dropped
 /// without being read in full: a page's resources are untrusted, and a server may
-/// send no length, or the wrong one.
+/// send no length, or the wrong one. With the `cache` feature, the HTTP cache reads
+/// the whole body first.
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 type HostLimits = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;

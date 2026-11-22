@@ -616,13 +616,19 @@ fn reader(bytes: &[u8]) -> image::ImageReader<Cursor<&[u8]>> {
 /// take more than `max` bytes, as 8-bit RGBA or in the decoder's own format. Any
 /// header it can't read is refused too.
 pub(crate) fn check_image_size(
-    reader: image::ImageReader<Cursor<&[u8]>>,
+    mut reader: image::ImageReader<Cursor<&[u8]>>,
     max: u64,
 ) -> image::ImageResult<()> {
     use image::ImageDecoder as _;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(max);
+    reader.limits(limits);
     let decoder = reader.into_decoder()?;
     let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) * 4 > max || decoder.total_bytes() > max {
+    let rgba = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(4);
+    if rgba > max || decoder.total_bytes() > max {
         return Err(image::ImageError::Limits(
             image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
         ));
@@ -631,20 +637,52 @@ pub(crate) fn check_image_size(
 }
 
 /// Decodes `bytes` as an image, unless [`check_image_size`] refuses it. The decode
-/// itself may allocate no more than `max` either: a GIF frame larger than its image
-/// takes a buffer of its own, which the header doesn't show.
+/// may allocate twice `max`: a GIF frame smaller or larger than its image takes a
+/// buffer of its own beside the image, which the header doesn't show.
 fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
     check_image_size(reader(bytes), max)?;
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(max);
+    limits.max_alloc = Some(max.saturating_mul(2));
     let mut reader = reader(bytes);
     reader.limits(limits);
     reader.decode()
 }
 
+/// `bytes` without the ICC profiles (iCCP chunks) of a PNG, which is borrowed
+/// unchanged if it is no PNG or has none. The png crate inflates a profile while it
+/// reads the header, as far as its memory limit, and a small file can hold one of
+/// hundreds of megabytes; nothing here uses it. Chunks after the first IDAT, and
+/// bytes past one that runs off the end, are kept as they are.
+pub(crate) fn strip_png_iccp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if !bytes.starts_with(SIGNATURE) {
+        return bytes.into();
+    }
+    let mut kept = SIGNATURE.to_vec();
+    let mut stripped = false;
+    let mut pos = SIGNATURE.len();
+    while let Some(head) = bytes.get(pos..pos + 8) {
+        let len = u32::from_be_bytes(head[..4].try_into().unwrap()) as usize;
+        let Some(end) = pos.checked_add(12 + len).filter(|&end| end <= bytes.len()) else {
+            break;
+        };
+        match &head[4..] {
+            b"IDAT" => break,
+            b"iCCP" => stripped = true,
+            _ => kept.extend_from_slice(&bytes[pos..end]),
+        }
+        pos = end;
+    }
+    if !stripped {
+        return bytes.into();
+    }
+    kept.extend_from_slice(&bytes[pos..]);
+    kept.into()
+}
+
 impl ImageHandler {
     fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
-        let image_err = match decode_image(&bytes, MAX_IMAGE_BYTES) {
+        let image_err = match decode_image(&strip_png_iccp(&bytes), MAX_IMAGE_BYTES) {
             Ok(image) => {
                 let width = image.width();
                 let height = image.height();
@@ -737,6 +775,42 @@ mod tests {
         assert!(check_image_size(reader(&gif), MAX_IMAGE_BYTES).is_ok());
         let error = decode_image(&gif, MAX_IMAGE_BYTES).unwrap_err();
         assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
+    }
+
+    #[test]
+    fn a_png_loses_its_icc_profile_before_decoding() {
+        // A 2 by 2 grayscale PNG with a 27-byte iCCP chunk before its IDAT.
+        let png = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x57, 0xdd, 0x52, 0xf8, 0x00, 0x00, 0x00, 0x0f, 0x69, 0x43, 0x43, 0x50, 0x70,
+            0x00, 0x00, 0x78, 0x9c, 0x63, 0x60, 0xa0, 0x0c, 0x00, 0x00, 0x00, 0x40, 0x00, 0x01,
+            0x02, 0x9d, 0xd5, 0xd4, 0x00, 0x00, 0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c,
+            0x63, 0x68, 0x68, 0x60, 0x68, 0x68, 0x00, 0x00, 0x06, 0x06, 0x02, 0x01, 0x2c, 0xc1,
+            0x50, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let stripped = strip_png_iccp(&png);
+        assert_eq!(stripped.len(), png.len() - 27);
+        assert!(!stripped.windows(4).any(|w| w == b"iCCP"));
+        assert_eq!(
+            decode_image(&stripped, MAX_IMAGE_BYTES)
+                .unwrap()
+                .into_luma8()
+                .into_raw(),
+            [0x80; 4]
+        );
+        // Without a profile, or as no PNG, the bytes pass unchanged.
+        assert!(matches!(
+            strip_png_iccp(&stripped),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            strip_png_iccp(b"GIF89a"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // A chunk running off the end stops the walk, and the rest is kept.
+        let cut = &png[..png.len() - 20];
+        assert_eq!(strip_png_iccp(cut).len(), cut.len() - 27);
     }
 
     #[test]

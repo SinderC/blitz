@@ -181,7 +181,13 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
                 // A raster is decoded when the SVG is painted, in the format usvg
                 // picked here from the MIME type or the data, so it is held to the
                 // same size as the page's own images, read in that same format.
-                let kind = default_data(mime, data, options)?;
+                // A PNG goes on without its ICC profiles (see `strip_png_iccp`).
+                let mut kind = default_data(mime, data, options)?;
+                if let usvg::ImageKind::PNG(data) = &kind {
+                    if let std::borrow::Cow::Owned(png) = crate::net::strip_png_iccp(data) {
+                        kind = usvg::ImageKind::PNG(Arc::new(png));
+                    }
+                }
                 let (format, data) = match &kind {
                     usvg::ImageKind::JPEG(data) => (image::ImageFormat::Jpeg, data),
                     usvg::ImageKind::PNG(data) => (image::ImageFormat::Png, data),
