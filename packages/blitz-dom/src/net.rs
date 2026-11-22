@@ -612,15 +612,10 @@ fn reader(bytes: &[u8]) -> image::ImageReader<Cursor<&[u8]>> {
         .expect("IO errors impossible with Cursor")
 }
 
-/// The most extended-XMP segments a JPEG may have. zune-jpeg sorts and walks all
-/// it has seen at every marker after the first, so a header read takes time in the
-/// square of their number: 80,000 of them, 6.4 MB, took 15 s.
-const MAX_JPEG_EXTENDED_XMP: usize = 64;
-
 /// Refuses the image in `bytes`, read in `format` or the one its bytes show, from
 /// its header alone, if decoding it would take more than `max` bytes, as 8-bit RGBA
-/// or in the decoder's own format. Any header it can't read is refused too, and so is
-/// a JPEG with more than [`MAX_JPEG_EXTENDED_XMP`] extended-XMP segments.
+/// or in the decoder's own format. Any header it can't read is refused too. Pass it
+/// bytes [`sanitize_image`] has seen.
 pub(crate) fn check_image_size(
     bytes: &[u8],
     format: Option<image::ImageFormat>,
@@ -636,14 +631,6 @@ pub(crate) fn check_image_size(
         Some(format) => image::ImageReader::with_format(Cursor::new(bytes), format),
         None => reader(bytes),
     };
-    if reader.format() == Some(image::ImageFormat::Jpeg) {
-        // Counted anywhere in the file, so that no marker zune-jpeg finds is missed.
-        const PREFIX: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
-        let segments = bytes.windows(PREFIX.len()).filter(|w| *w == PREFIX);
-        if segments.take(MAX_JPEG_EXTENDED_XMP + 1).count() > MAX_JPEG_EXTENDED_XMP {
-            return Err(refused());
-        }
-    }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(max);
     reader.limits(limits);
@@ -658,18 +645,55 @@ pub(crate) fn check_image_size(
     Ok(())
 }
 
-/// Decodes `bytes` as an image, without a PNG's ICC profiles (see
-/// [`strip_png_iccp`]), unless [`check_image_size`] refuses it. The decode
+/// Decodes `bytes` as an image, once [`sanitize_image`] has seen it, unless
+/// [`check_image_size`] refuses it. The decode
 /// may allocate twice `max`: a GIF frame smaller or larger than its image takes a
 /// buffer of its own beside the image, which the header doesn't show.
 fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
-    let bytes = &strip_png_iccp(bytes);
+    let bytes = &sanitize_image(bytes);
     check_image_size(bytes, None, max)?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(max.saturating_mul(2));
     let mut reader = reader(bytes);
     reader.limits(limits);
     reader.decode()
+}
+
+/// `bytes` with what a decoder would spend too long or too much memory on, and
+/// nothing here uses, taken out of a PNG or a JPEG (see [`strip_png_iccp`] and
+/// [`disarm_jpeg_extended_xmp`]). Other images are borrowed unchanged.
+pub(crate) fn sanitize_image(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match strip_png_iccp(bytes) {
+        std::borrow::Cow::Borrowed(bytes) => disarm_jpeg_extended_xmp(bytes),
+        stripped => stripped,
+    }
+}
+
+/// `bytes` with a JPEG's extended-XMP segments made unrecognisable, which is
+/// borrowed unchanged if it is no JPEG or has none. zune-jpeg sorts and walks every
+/// one it has seen after each marker, so a header read takes time in segments times
+/// markers: 80,000 segments took 15 s, and 64 with 8 million markers 6 s. The first
+/// byte of each prefix is changed wherever it is found, which keeps every length,
+/// and JPEG has no checksums.
+fn disarm_jpeg_extended_xmp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    const PREFIX: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
+    // zune-jpeg needs only these two bytes to read a JPEG.
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return bytes.into();
+    }
+    let mut found = bytes
+        .windows(PREFIX.len())
+        .enumerate()
+        .filter(|(_, w)| *w == PREFIX);
+    let Some((first, _)) = found.next() else {
+        return bytes.into();
+    };
+    let mut disarmed = bytes.to_vec();
+    disarmed[first] = b'H';
+    for (at, _) in found {
+        disarmed[at] = b'H';
+    }
+    disarmed.into()
 }
 
 /// `bytes` without the ICC profiles (iCCP chunks) of a PNG, which is borrowed
@@ -838,34 +862,62 @@ mod tests {
         assert_eq!(strip_png_iccp(cut).len(), cut.len() - 27);
     }
 
-    /// A JPEG of SOI, `segments` extended-XMP segments of one never-complete XMP, and
-    /// EOI.
+    /// An 8 by 8 JPEG with `segments` extended-XMP segments, of one XMP that never
+    /// completes, after its SOI.
     fn jpeg_with_extended_xmp(segments: u32) -> Vec<u8> {
-        let mut jpeg = vec![0xff, 0xd8];
+        let mut jpeg = Vec::new();
+        image::GrayImage::new(8, 8)
+            .write_to(&mut Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+        let mut flooded = jpeg[..2].to_vec();
         for offset in 0..segments {
             let mut payload = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
             payload.extend_from_slice(&[b'0'; 32]); // The XMP's GUID.
             payload.extend_from_slice(&u32::MAX.to_be_bytes()); // Its full length.
             payload.extend_from_slice(&offset.to_be_bytes());
             payload.push(0);
-            jpeg.extend_from_slice(&[0xff, 0xe1]);
-            jpeg.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
-            jpeg.extend_from_slice(&payload);
+            flooded.extend_from_slice(&[0xff, 0xe1]);
+            flooded.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
+            flooded.extend_from_slice(&payload);
         }
-        jpeg.extend_from_slice(&[0xff, 0xd9]);
-        jpeg
+        flooded.extend_from_slice(&jpeg[2..]);
+        flooded
     }
 
     #[test]
-    fn a_jpeg_with_too_many_extended_xmp_segments_is_refused() {
-        let at_limit = jpeg_with_extended_xmp(MAX_JPEG_EXTENDED_XMP as u32);
-        assert!(!refused(&check_image_size(
-            &at_limit,
-            None,
-            MAX_IMAGE_BYTES
-        )));
-        let over = jpeg_with_extended_xmp(MAX_JPEG_EXTENDED_XMP as u32 + 1);
-        assert!(refused(&check_image_size(&over, None, MAX_IMAGE_BYTES)));
+    fn a_jpeg_loses_its_extended_xmp_before_decoding() {
+        let jpeg = jpeg_with_extended_xmp(3);
+        let disarmed = sanitize_image(&jpeg);
+        assert_eq!(disarmed.len(), jpeg.len());
+        assert!(!disarmed.windows(5).any(|w| w == b"http:"));
+        let image = decode_image(&disarmed, MAX_IMAGE_BYTES).unwrap();
+        assert_eq!((image.width(), image.height()), (8, 8));
+        // Without extended XMP, or as no JPEG, the bytes pass unchanged.
+        let plain = jpeg_with_extended_xmp(0);
+        assert!(matches!(
+            sanitize_image(&plain),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let not_jpeg = &jpeg[2..];
+        assert!(matches!(
+            sanitize_image(not_jpeg),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn a_jpeg_flooded_with_extended_xmp_decodes_quickly() {
+        // 20,000 segments took 0.8 s to read in a release build, and many times that
+        // in a debug one.
+        let jpeg = jpeg_with_extended_xmp(20_000);
+        let start = std::time::Instant::now();
+        let image = decode_image(&jpeg, MAX_IMAGE_BYTES).unwrap();
+        assert_eq!((image.width(), image.height()), (8, 8));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

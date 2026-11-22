@@ -181,12 +181,22 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
                 // A raster is decoded when the SVG is painted, in the format usvg
                 // picked here from the MIME type or the data, so it is held to the
                 // same size as the page's own images, read in that same format.
-                // A PNG goes on without its ICC profiles (see `strip_png_iccp`).
+                // A raster goes on as `sanitize_image` leaves it.
                 let mut kind = default_data(mime, data, options)?;
-                if let usvg::ImageKind::PNG(data) = &kind {
-                    if let std::borrow::Cow::Owned(png) = crate::net::strip_png_iccp(data) {
-                        kind = usvg::ImageKind::PNG(Arc::new(png));
+                let sanitized = match &kind {
+                    usvg::ImageKind::JPEG(data) | usvg::ImageKind::PNG(data) => {
+                        match crate::net::sanitize_image(data) {
+                            std::borrow::Cow::Owned(data) => Some(Arc::new(data)),
+                            std::borrow::Cow::Borrowed(_) => None,
+                        }
                     }
+                    _ => None,
+                };
+                if let Some(data) = sanitized {
+                    kind = match kind {
+                        usvg::ImageKind::JPEG(_) => usvg::ImageKind::JPEG(data),
+                        _ => usvg::ImageKind::PNG(data),
+                    };
                 }
                 let (format, data) = match &kind {
                     usvg::ImageKind::JPEG(data) => (image::ImageFormat::Jpeg, data),
@@ -300,31 +310,60 @@ mod svg_tests {
         assert_eq!(image_count(&format!("data:image/jpeg,{data}")), 1);
     }
 
-    #[test]
-    fn image_href_with_a_png_loads_without_its_icc_profile() {
-        // A 2 by 2 grayscale PNG with an iCCP chunk.
-        let data = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAAD2lDQ1BwAAB4nGNgoAwAAABAAAECndXUAAAADklEQVR4nGNoaGBoaAAABgYCASzBUNcAAAAASUVORK5CYII=";
-        let src = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="data:image/png;base64,{data}" width="2" height="2"/></svg>"#
-        );
-        let svg = parse_svg_image(src.as_bytes()).unwrap();
-        fn pngs(group: &usvg::Group, found: &mut Vec<std::sync::Arc<Vec<u8>>>) {
+    /// The raster data of each image in an SVG holding one `<image>` of `href`.
+    fn rasters(href: &str) -> Vec<std::sync::Arc<Vec<u8>>> {
+        fn walk(group: &usvg::Group, found: &mut Vec<std::sync::Arc<Vec<u8>>>) {
             for node in group.children() {
                 match node {
-                    usvg::Node::Image(image) => {
-                        if let usvg::ImageKind::PNG(png) = image.kind() {
-                            found.push(png.clone());
-                        }
-                    }
-                    usvg::Node::Group(group) => pngs(group, found),
+                    usvg::Node::Image(image) => match image.kind() {
+                        usvg::ImageKind::JPEG(data)
+                        | usvg::ImageKind::PNG(data)
+                        | usvg::ImageKind::GIF(data)
+                        | usvg::ImageKind::WEBP(data) => found.push(data.clone()),
+                        usvg::ImageKind::SVG(_) => {}
+                    },
+                    usvg::Node::Group(group) => walk(group, found),
                     _ => {}
                 }
             }
         }
+        let src = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="{href}" width="8" height="8"/></svg>"#
+        );
         let mut found = Vec::new();
-        pngs(svg.tree.root(), &mut found);
+        walk(
+            parse_svg_image(src.as_bytes()).unwrap().tree.root(),
+            &mut found,
+        );
+        found
+    }
+
+    #[test]
+    fn image_href_with_a_png_loads_without_its_icc_profile() {
+        // A 2 by 2 grayscale PNG with an iCCP chunk.
+        let data = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAAAAABX3VL4AAAAD2lDQ1BwAAB4nGNgoAwAAABAAAECndXUAAAADklEQVR4nGNoaGBoaAAABgYCASzBUNcAAAAASUVORK5CYII=";
+        let found = rasters(&format!("data:image/png;base64,{data}"));
         assert_eq!(found.len(), 1);
         assert!(!found[0].windows(4).any(|w| w == b"iCCP"));
+    }
+
+    #[test]
+    fn image_href_with_a_jpeg_loads_without_its_extended_xmp() {
+        let mut jpeg = Vec::new();
+        image::GrayImage::new(8, 8)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let mut segment = vec![0xff, 0xe1, 0x00, 0x2c];
+        segment.extend_from_slice(b"http://ns.adobe.com/xmp/extension/\0");
+        segment.extend_from_slice(&[0; 7]);
+        jpeg.splice(2..2, segment);
+        let data: String = jpeg.iter().map(|b| format!("%{b:02X}")).collect();
+        let found = rasters(&format!("data:image/jpeg,{data}"));
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].windows(5).any(|w| w == b"http:"));
     }
 
     #[test]
