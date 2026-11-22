@@ -660,48 +660,58 @@ fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImag
 }
 
 /// `bytes` with what a decoder would spend too long or too much memory on, and
-/// nothing here uses, taken out of a PNG or a JPEG (see [`strip_png_iccp`] and
-/// [`disarm_jpeg_extended_xmp`]). Other images are borrowed unchanged.
+/// nothing here uses, taken out of a PNG or a JPEG (see [`strip_png_metadata`] and
+/// [`disarm_jpeg_metadata`]). Other images are borrowed unchanged.
 pub(crate) fn sanitize_image(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    match strip_png_iccp(bytes) {
-        std::borrow::Cow::Borrowed(bytes) => disarm_jpeg_extended_xmp(bytes),
+    match strip_png_metadata(bytes) {
+        std::borrow::Cow::Borrowed(bytes) => disarm_jpeg_metadata(bytes),
         stripped => stripped,
     }
 }
 
-/// `bytes` with a JPEG's extended-XMP segments made unrecognisable, which is
-/// borrowed unchanged if it is no JPEG or has none. zune-jpeg sorts and walks every
-/// one it has seen after each marker, so a header read takes time in segments times
-/// markers: 80,000 segments took 15 s, and 64 with 8 million markers 6 s. The first
-/// byte of each prefix is changed wherever it is found, which keeps every length,
-/// and JPEG has no checksums.
-fn disarm_jpeg_extended_xmp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    const PREFIX: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
+/// `bytes` with a JPEG's extended XMP, ICC profile and gain-map segments made
+/// unrecognisable, which is borrowed unchanged if it is no JPEG or has none.
+/// zune-jpeg sorts and walks every extended-XMP segment it has seen after each
+/// marker, so a header read takes time in segments times markers (80,000 segments
+/// took 15 s, and 64 with 8 million markers 6 s), and it keeps each tiny ICC or
+/// gain-map segment in an allocation of its own (32 MiB of ICC ones took 216 MB).
+///
+/// The first byte of each segment's prefix is changed wherever it is found, so
+/// zune-jpeg skips the segment as an unknown one. That keeps every length, JPEG has
+/// no checksums, and it needs no marker walk that could disagree with zune-jpeg's.
+/// A prefix found elsewhere, as in scan data, is changed too, which can change only
+/// that image's pixels; a real image doesn't hold these strings anywhere else.
+fn disarm_jpeg_metadata(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    const PREFIXES: [&[u8]; 3] = [
+        b"http://ns.adobe.com/xmp/extension/\0",
+        b"ICC_PROFILE\0",
+        b"urn:iso:std:iso:ts:21496:-1\0",
+    ];
     // zune-jpeg needs only these two bytes to read a JPEG.
     if !bytes.starts_with(&[0xff, 0xd8]) {
         return bytes.into();
     }
-    let mut found = bytes
-        .windows(PREFIX.len())
-        .enumerate()
-        .filter(|(_, w)| *w == PREFIX);
-    let Some((first, _)) = found.next() else {
-        return bytes.into();
-    };
-    let mut disarmed = bytes.to_vec();
-    disarmed[first] = b'H';
-    for (at, _) in found {
-        disarmed[at] = b'H';
+    let mut disarmed: Option<Vec<u8>> = None;
+    for prefix in PREFIXES {
+        for at in memchr::memmem::find_iter(bytes, prefix) {
+            // A changed case is enough: zune-jpeg compares the prefixes exactly.
+            disarmed.get_or_insert_with(|| bytes.to_vec())[at] ^= 0x20;
+        }
     }
-    disarmed.into()
+    match disarmed {
+        Some(disarmed) => disarmed.into(),
+        None => bytes.into(),
+    }
 }
 
-/// `bytes` without the ICC profiles (iCCP chunks) of a PNG, which is borrowed
-/// unchanged if it is no PNG or has none. The png crate inflates a profile while it
-/// reads the header, as far as its memory limit, and a small file can hold one of
-/// hundreds of megabytes; nothing here uses it. Chunks after the first IDAT, and
-/// bytes past one that runs off the end, are kept as they are.
-pub(crate) fn strip_png_iccp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+/// `bytes` without the ICC profile (iCCP) and text (tEXt, zTXt, iTXt) chunks of a
+/// PNG, which is borrowed unchanged if it is no PNG or has none, as nothing here
+/// uses them. The png crate inflates a profile while it reads the header, as far as
+/// its memory limit, so a small file can hold one of hundreds of megabytes, and it
+/// keeps each text chunk in allocations of its own, which 32 MiB of tiny ones grow
+/// to 335 MB. Chunks after the first IDAT, which the png crate doesn't read before
+/// the pixels, and bytes past one that runs off the end, are kept as they are.
+pub(crate) fn strip_png_metadata(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     if !bytes.starts_with(SIGNATURE) {
         return bytes.into();
@@ -717,7 +727,7 @@ pub(crate) fn strip_png_iccp(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
         };
         match &head[4..] {
             b"IDAT" => break,
-            b"iCCP" => stripped = true,
+            b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt" => stripped = true,
             _ => kept.extend_from_slice(&bytes[pos..end]),
         }
         pos = end;
@@ -838,7 +848,7 @@ mod tests {
             0x63, 0x68, 0x68, 0x60, 0x68, 0x68, 0x00, 0x00, 0x06, 0x06, 0x02, 0x01, 0x2c, 0xc1,
             0x50, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
         ];
-        let stripped = strip_png_iccp(&png);
+        let stripped = strip_png_metadata(&png);
         assert_eq!(stripped.len(), png.len() - 27);
         assert!(!stripped.windows(4).any(|w| w == b"iCCP"));
         assert_eq!(
@@ -850,16 +860,16 @@ mod tests {
         );
         // Without a profile, or as no PNG, the bytes pass unchanged.
         assert!(matches!(
-            strip_png_iccp(&stripped),
+            strip_png_metadata(&stripped),
             std::borrow::Cow::Borrowed(_)
         ));
         assert!(matches!(
-            strip_png_iccp(b"GIF89a"),
+            strip_png_metadata(b"GIF89a"),
             std::borrow::Cow::Borrowed(_)
         ));
         // A chunk running off the end stops the walk, and the rest is kept.
         let cut = &png[..png.len() - 20];
-        assert_eq!(strip_png_iccp(cut).len(), cut.len() - 27);
+        assert_eq!(strip_png_metadata(cut).len(), cut.len() - 27);
     }
 
     /// An 8 by 8 JPEG with `segments` extended-XMP segments, of one XMP that never
@@ -903,6 +913,49 @@ mod tests {
             sanitize_image(not_jpeg),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn a_jpeg_loses_its_icc_profile_and_gain_map_before_decoding() {
+        let mut jpeg = jpeg_with_extended_xmp(0);
+        for (marker, prefix) in [
+            (0xe2, &b"ICC_PROFILE\0\x01\x01"[..]),
+            (0xe2, &b"urn:iso:std:iso:ts:21496:-1\0\0\0"[..]),
+        ] {
+            let mut segment = vec![0xff, marker];
+            segment.extend_from_slice(&(prefix.len() as u16 + 3).to_be_bytes());
+            segment.extend_from_slice(prefix);
+            segment.push(0);
+            jpeg.splice(2..2, segment);
+        }
+        let disarmed = sanitize_image(&jpeg);
+        assert_eq!(disarmed.len(), jpeg.len());
+        assert!(!disarmed.windows(12).any(|w| w == b"ICC_PROFILE\0"));
+        assert!(!disarmed.windows(4).any(|w| w == b"urn:"));
+        let image = decode_image(&disarmed, MAX_IMAGE_BYTES).unwrap();
+        assert_eq!((image.width(), image.height()), (8, 8));
+    }
+
+    #[test]
+    fn a_png_loses_its_text_before_decoding() {
+        // An 8 by 8 PNG with a tEXt, a zTXt and an iTXt chunk before its IDAT. Their
+        // CRCs are wrong, which doesn't matter once they are gone.
+        let mut png = Vec::new();
+        image::GrayImage::new(8, 8)
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let idat = png.windows(4).position(|w| w == b"IDAT").unwrap() - 4;
+        for kind in [b"tEXt", b"zTXt", b"iTXt"] {
+            let mut chunk = 1u32.to_be_bytes().to_vec();
+            chunk.extend_from_slice(kind);
+            chunk.extend_from_slice(&[b'a', 0, 0, 0, 0]);
+            png.splice(idat..idat, chunk);
+        }
+        let stripped = sanitize_image(&png);
+        assert_eq!(stripped.len(), png.len() - 3 * 13);
+        assert!(!stripped.windows(3).any(|w| w == b"TXt" || w == b"EXt"));
+        let image = decode_image(&stripped, MAX_IMAGE_BYTES).unwrap();
+        assert_eq!((image.width(), image.height()), (8, 8));
     }
 
     #[test]

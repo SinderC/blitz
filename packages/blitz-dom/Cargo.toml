@@ -92,6 +92,7 @@ rayon = { workspace = true }
 
 # Media & Decoding
 image = { workspace = true }
+memchr = { workspace = true }
 usvg = { workspace = true, optional = true }
 svgtypes = { workspace = true, optional = true }
 wuff = { workspace = true, optional = true }

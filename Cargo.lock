@@ -931,6 +931,7 @@ dependencies = [
  "kurbo",
  "linebender_resource_handle",
  "markup5ever",
+ "memchr",
  "objc2 0.6.5",
  "parley",
  "percent-encoding",
