@@ -599,13 +599,31 @@ impl NetHandler for ResourceHandler<ImageHandler> {
     }
 }
 
-impl ImageHandler {
-    fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
-        let image_err = match image::ImageReader::new(Cursor::new(&bytes))
+/// The largest image decoded, in bytes of RGBA: a 128 MiB image is 5792 pixels
+/// square, or 8000 by 4194. A page's images are untrusted, and a small file can
+/// declare a huge one, so a larger image is refused from its header, before it is
+/// decoded.
+const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Decodes `bytes` as an image, unless its RGBA would take more than `max` bytes.
+fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
+    let reader = || {
+        image::ImageReader::new(Cursor::new(bytes))
             .with_guessed_format()
             .expect("IO errors impossible with Cursor")
-            .decode()
-        {
+    };
+    let (width, height) = reader().into_dimensions()?;
+    if u64::from(width) * u64::from(height) * 4 > max {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
+        ));
+    }
+    reader().decode()
+}
+
+impl ImageHandler {
+    fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
+        let image_err = match decode_image(&bytes, MAX_IMAGE_BYTES) {
             Ok(image) => {
                 let width = image.width();
                 let height = image.height();
@@ -641,6 +659,64 @@ impl ImageHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PNG header for a `width` by `height` grayscale image, with no pixel data.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        // The PNG signature, then IHDR with `width` and `height` at bytes 16..24, an
+        // empty IDAT and IEND. The CRCs are patched in.
+        let mut png = vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x3a, 0x7e, 0x9b, 0x55, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00,
+            0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        png[16..20].copy_from_slice(&width.to_be_bytes());
+        png[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = crc32(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        png
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn an_image_too_large_to_decode_is_refused_from_its_header() {
+        // 22000 by 22000 is 1.9 GB as RGBA, from a file of 57 bytes.
+        let error = decode_image(&png_header(22000, 22000), MAX_IMAGE_BYTES).unwrap_err();
+        assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
+        // A 4000 by 3000 photo passes the check, then fails here only for its
+        // missing pixels.
+        let error = decode_image(&png_header(4000, 3000), MAX_IMAGE_BYTES).unwrap_err();
+        assert!(!matches!(error, image::ImageError::Limits(_)), "{error}");
+    }
+
+    #[test]
+    fn an_image_at_the_limit_decodes() {
+        // A 2 by 2 grayscale PNG: 16 bytes as RGBA.
+        let png = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x57, 0xdd, 0x52, 0xf8, 0x00, 0x00, 0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x68, 0x68, 0x60, 0x68, 0x68, 0x00, 0x00, 0x06, 0x06, 0x02, 0x01, 0x2c,
+            0xc1, 0x50, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
+            0x82,
+        ];
+        assert!(decode_image(&png, 16).is_ok());
+        assert!(matches!(
+            decode_image(&png, 15),
+            Err(image::ImageError::Limits(_))
+        ));
+    }
     use parley::fontique::FontStyle as Fq;
     use style::stylesheets::AllowImportRules;
     use style::values::specified::Angle;

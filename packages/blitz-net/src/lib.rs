@@ -25,6 +25,10 @@ const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/2010010
 
 /// Matches real browsers' per-origin cap of 6.
 const PER_HOST_MAX_CONCURRENT: usize = 6;
+/// The largest response body read, in bytes. A larger one fails, and is dropped
+/// without being read in full: a page's resources are untrusted, and a server may
+/// send no length, or the wrong one.
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 type HostLimits = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;
 
@@ -152,6 +156,21 @@ impl Provider {
         }
     }
 }
+/// The body of `response`, or [`ProviderError::TooLarge`] once it passes `max` bytes.
+async fn read_capped(mut response: reqwest::Response, max: usize) -> Result<Bytes, ProviderError> {
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        return Err(ProviderError::TooLarge { max });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > max {
+            return Err(ProviderError::TooLarge { max });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(body))
+}
+
 impl Provider {
     async fn fetch_inner(
         client: Client,
@@ -221,7 +240,7 @@ impl Provider {
         let final_url = response.url().to_string();
 
         if status.is_success() {
-            return Ok((final_url, response.bytes().await?));
+            return Ok((final_url, read_capped(response, MAX_BODY_BYTES).await?));
         }
 
         #[cfg(feature = "tracing")]
@@ -378,6 +397,9 @@ pub enum ProviderError {
         status: reqwest::StatusCode,
         url: String,
     },
+    TooLarge {
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for ProviderError {
@@ -391,6 +413,7 @@ impl std::fmt::Display for ProviderError {
             #[cfg(feature = "cache")]
             Self::ReqwestMiddlewareError(e) => write!(f, "reqwest middleware error: {e}"),
             Self::HttpStatus { status, url } => write!(f, "HTTP {status} for {url}"),
+            Self::TooLarge { max } => write!(f, "response body larger than {max} bytes"),
         }
     }
 }
@@ -535,6 +558,51 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
         assert!(fetch(&format!("http://{addr}/missing.css")).is_err());
+    }
+
+    /// Serves one response: `head`, then `body_len` bytes of body.
+    fn serve_once(head: &'static str, body_len: usize) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            let chunk = [b'a'; 64 * 1024];
+            let mut sent = 0;
+            while sent < body_len {
+                let n = chunk.len().min(body_len - sent);
+                // The client hangs up once the body is too large.
+                if stream.write_all(&chunk[..n]).is_err() {
+                    return;
+                }
+                sent += n;
+            }
+        });
+        (format!("http://{addr}/image.png"), server)
+    }
+
+    #[test]
+    fn a_body_over_the_cap_is_refused() {
+        // A declared length over the cap fails before the body is read.
+        let head = "HTTP/1.1 200 OK\r\nContent-Length: 1000000000\r\nConnection: close\r\n\r\n";
+        let (url, server) = serve_once(head, 0);
+        let error = fetch(&url).unwrap_err();
+        assert!(error.contains("larger than"), "{error}");
+        server.join().unwrap();
+
+        // Without a length, it fails once the body passes the cap.
+        let head = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+        let (url, server) = serve_once(head, MAX_BODY_BYTES + 1);
+        let error = fetch(&url).unwrap_err();
+        assert!(error.contains("larger than"), "{error}");
+        server.join().unwrap();
+
+        // A body at the cap is delivered.
+        let (url, server) = serve_once(head, MAX_BODY_BYTES);
+        assert_eq!(fetch(&url).unwrap().len(), MAX_BODY_BYTES);
+        server.join().unwrap();
     }
 
     #[test]
