@@ -156,6 +156,7 @@ impl Provider {
         }
     }
 }
+
 /// The body of `response`, or [`ProviderError::TooLarge`] once it passes `max` bytes.
 async fn read_capped(mut response: reqwest::Response, max: usize) -> Result<Bytes, ProviderError> {
     if response.content_length().is_some_and(|n| n > max as u64) {

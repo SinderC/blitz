@@ -166,7 +166,8 @@ pub(crate) fn is_gzip(data: &[u8]) -> bool {
 /// other href as a file path, outside the document's net provider, so an SVG from a
 /// page could read local files, devices or (on Windows) UNC paths. A `data:` image
 /// that is gzip-compressed is refused, like the SVG itself (see
-/// [`SvgImageData::from_data`](crate::node::SvgImageData::from_data)).
+/// [`SvgImageData::from_data`](crate::node::SvgImageData::from_data)), and so is a
+/// raster too large to decode (see [`MAX_IMAGE_BYTES`](crate::net::MAX_IMAGE_BYTES)).
 #[cfg(feature = "svg")]
 pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
     let default_data = usvg::ImageHrefResolver::default_data_resolver();
@@ -175,6 +176,13 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: Box::new(move |mime, data, options| {
                 if is_gzip(&data) {
+                    return None;
+                }
+                // A raster is decoded when the SVG is painted, so it is held to the
+                // same size as the page's own images.
+                if image::guess_format(&data).is_ok()
+                    && crate::net::check_image_size(&data, crate::net::MAX_IMAGE_BYTES).is_err()
+                {
                     return None;
                 }
                 default_data(mime, data, options)
@@ -257,6 +265,13 @@ mod svg_tests {
         // The same bytes, base64-encoded.
         let data = "H4sIAAAAAAAC/7MpLktXqMjNySu2VcooKSmw0tcvLy/XKzfWyy9K1zcyMDDQB6pQUijPTCnJsFUyNFBSyEjNTM8oAbPtbIpSk0twSOrb2YD02gEAJzw/6WMAAAA=";
         assert_eq!(image_count(&format!("data:image/svg+xml;base64,{data}")), 0);
+    }
+
+    #[test]
+    fn image_href_with_a_raster_too_large_to_decode_loads_nothing() {
+        // A PNG header, with no pixels, for 22000 by 22000 grayscale: 1.9 GB as RGBA.
+        let data = "iVBORw0KGgoAAAANSUhEUgAAVfAAAFXwCAAAAABjOgE4AAAACElEQVR4nAMAAAAAAUgGidIAAAAASUVORK5CYII=";
+        assert_eq!(image_count(&format!("data:image/png;base64,{data}")), 0);
     }
 
     #[test]

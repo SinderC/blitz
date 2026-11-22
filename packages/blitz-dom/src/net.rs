@@ -599,26 +599,37 @@ impl NetHandler for ResourceHandler<ImageHandler> {
     }
 }
 
-/// The largest image decoded, in bytes of RGBA: a 128 MiB image is 5792 pixels
+/// The largest image decoded, in bytes, both as 8-bit RGBA and as the decoder's own
+/// buffer (a 16-bit image takes twice the RGBA). As RGBA, 128 MiB is 5792 pixels
 /// square, or 8000 by 4194. A page's images are untrusted, and a small file can
 /// declare a huge one, so a larger image is refused from its header, before it is
 /// decoded.
-const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Decodes `bytes` as an image, unless its RGBA would take more than `max` bytes.
-fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
-    let reader = || {
-        image::ImageReader::new(Cursor::new(bytes))
-            .with_guessed_format()
-            .expect("IO errors impossible with Cursor")
-    };
-    let (width, height) = reader().into_dimensions()?;
-    if u64::from(width) * u64::from(height) * 4 > max {
+fn reader(bytes: &[u8]) -> image::ImageReader<Cursor<&[u8]>> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .expect("IO errors impossible with Cursor")
+}
+
+/// Refuses `bytes`, from its header alone, if decoding it would take more than
+/// `max` bytes, as 8-bit RGBA or in the decoder's own format.
+pub(crate) fn check_image_size(bytes: &[u8], max: u64) -> image::ImageResult<()> {
+    use image::ImageDecoder as _;
+    let decoder = reader(bytes).into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) * 4 > max || decoder.total_bytes() > max {
         return Err(image::ImageError::Limits(
             image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
         ));
     }
-    reader().decode()
+    Ok(())
+}
+
+/// Decodes `bytes` as an image, unless [`check_image_size`] refuses it.
+fn decode_image(bytes: &[u8], max: u64) -> image::ImageResult<image::DynamicImage> {
+    check_image_size(bytes, max)?;
+    reader(bytes).decode()
 }
 
 impl ImageHandler {
@@ -660,44 +671,49 @@ impl ImageHandler {
 mod tests {
     use super::*;
 
-    /// A PNG header for a `width` by `height` grayscale image, with no pixel data.
-    fn png_header(width: u32, height: u32) -> Vec<u8> {
-        // The PNG signature, then IHDR with `width` and `height` at bytes 16..24, an
-        // empty IDAT and IEND. The CRCs are patched in.
-        let mut png = vec![
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00,
-            0x00, 0x3a, 0x7e, 0x9b, 0x55, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78,
-            0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00,
-            0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-        ];
-        png[16..20].copy_from_slice(&width.to_be_bytes());
-        png[20..24].copy_from_slice(&height.to_be_bytes());
-        let crc = crc32(&png[12..29]);
-        png[29..33].copy_from_slice(&crc.to_be_bytes());
-        png
+    use parley::fontique::FontStyle as Fq;
+    use style::stylesheets::AllowImportRules;
+    use style::values::specified::Angle;
+
+    /// Whether `result` is [`check_image_size`]'s refusal.
+    fn refused<T>(result: &image::ImageResult<T>) -> bool {
+        matches!(result, Err(image::ImageError::Limits(e))
+            if e.kind() == image::error::LimitErrorKind::DimensionError)
     }
 
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc = !0u32;
-        for &byte in data {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
-            }
-        }
-        !crc
-    }
+    // PNG headers with no pixel data: the signature, IHDR, an empty IDAT and IEND.
+    /// 22000 by 22000 grayscale: 1.9 GB as RGBA, from a file of 65 bytes.
+    const HUGE_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x55, 0xf0, 0x00, 0x00, 0x55, 0xf0, 0x08, 0x00, 0x00, 0x00, 0x00, 0x63,
+        0x3a, 0x01, 0x38, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    /// 4000 by 3000 RGB, a large photo: 48 MB as RGBA.
+    const PHOTO_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x0f, 0xa0, 0x00, 0x00, 0x0b, 0xb8, 0x08, 0x02, 0x00, 0x00, 0x00, 0x7a,
+        0xd7, 0xd0, 0xb0, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    /// 5000 by 5000 16-bit RGBA: 100 MB as 8-bit RGBA, but 200 MB to decode.
+    const DEEP_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x13, 0x88, 0x00, 0x00, 0x13, 0x88, 0x10, 0x06, 0x00, 0x00, 0x00, 0x0d,
+        0x08, 0x5b, 0x88, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
 
     #[test]
     fn an_image_too_large_to_decode_is_refused_from_its_header() {
-        // 22000 by 22000 is 1.9 GB as RGBA, from a file of 65 bytes.
-        let error = decode_image(&png_header(22000, 22000), MAX_IMAGE_BYTES).unwrap_err();
-        assert!(matches!(error, image::ImageError::Limits(_)), "{error}");
-        // A 4000 by 3000 photo passes the check, then fails here only for its
-        // missing pixels.
-        let error = decode_image(&png_header(4000, 3000), MAX_IMAGE_BYTES).unwrap_err();
-        assert!(!matches!(error, image::ImageError::Limits(_)), "{error}");
+        assert!(refused(&decode_image(HUGE_PNG, MAX_IMAGE_BYTES)));
+        assert!(refused(&decode_image(DEEP_PNG, MAX_IMAGE_BYTES)));
+        // The photo passes the check, then fails here only for its missing pixels.
+        let photo = decode_image(PHOTO_PNG, MAX_IMAGE_BYTES);
+        assert!(photo.is_err() && !refused(&photo));
     }
 
     #[test]
@@ -712,14 +728,8 @@ mod tests {
             0x82,
         ];
         assert!(decode_image(&png, 16).is_ok());
-        assert!(matches!(
-            decode_image(&png, 15),
-            Err(image::ImageError::Limits(_))
-        ));
+        assert!(refused(&decode_image(&png, 15)));
     }
-    use parley::fontique::FontStyle as Fq;
-    use style::stylesheets::AllowImportRules;
-    use style::values::specified::Angle;
 
     fn oblique(min_deg: f32, max_deg: f32) -> FontStyleRange {
         FontStyleRange::Oblique(Angle::from_degrees(min_deg), Angle::from_degrees(max_deg))
