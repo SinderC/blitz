@@ -101,6 +101,17 @@ impl crate::document::BaseDocument {
             self.last_animation_time = now;
         }
 
+        for id in std::mem::take(&mut self.canceled_animation_nodes) {
+            let node_id = NodeId::from_u64(id as u64);
+            if let Some(node) = self
+                .nodes
+                .get_mut(node_id)
+                .filter(|node| node.flags.is_in_document())
+            {
+                node.set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            }
+        }
+
         // Mark actively animating nodes as dirty
         let mut sets = self.animations.sets.write();
         for (key, set) in sets.iter_mut() {
@@ -204,8 +215,23 @@ impl crate::document::BaseDocument {
         }
         self.snapshots.clear();
 
+        // Stylo cancels an animation or transition after the restyle that dropped it has
+        // applied its current value, and doesn't style the element again: the next
+        // resolve does, without the value it left. Not now: this resolve clears the dirty
+        // flags after styling.
         let mut sets = self.animations.sets.write();
-        for set in sets.values_mut() {
+        for (key, set) in sets.iter_mut() {
+            let canceled = set
+                .animations
+                .iter()
+                .any(|a| a.state == AnimationState::Canceled)
+                || set
+                    .transitions
+                    .iter()
+                    .any(|t| t.state == AnimationState::Canceled);
+            if canceled {
+                self.canceled_animation_nodes.push(key.node.id());
+            }
             set.clear_canceled_animations();
         }
         let mut finished = Vec::new();
@@ -227,7 +253,8 @@ impl crate::document::BaseDocument {
                 data.may_have_animations.store(false, Ordering::Relaxed);
             }
         }
-        self.has_active_animations = sets.values().any(|state| state.needs_animation_ticks());
+        self.has_active_animations = !self.canceled_animation_nodes.is_empty()
+            || sets.values().any(|state| state.needs_animation_ticks());
 
         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
         self.stylist.rule_tree().maybe_gc();

@@ -383,6 +383,9 @@ pub struct BaseDocument {
     /// The animation time of the last style resolve, which started the animations and
     /// transitions still marked new. The next resolve starts their clocks at its own time.
     pub(crate) last_animation_time: f64,
+    /// Elements whose animations or transitions the last resolve canceled: the next one
+    /// restyles them, so they let go of the value the canceled ones left.
+    pub(crate) canceled_animation_nodes: Vec<usize>,
     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
     pub(crate) has_canvas: bool,
     /// Whether there are subdocuments that are animating (so we should re-render every frame)
@@ -588,6 +591,7 @@ impl BaseDocument {
             mousedown_node_id: None,
             has_active_animations: false,
             last_animation_time: 0.0,
+            canceled_animation_nodes: Vec::new(),
             subdoc_is_animating: false,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
