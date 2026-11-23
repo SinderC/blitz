@@ -48,27 +48,40 @@ impl NavigationProvider for IframeNavigationProvider {
 impl BaseDocument {
     /// Build the [`DocumentConfig`] for an iframe sub-document, inheriting
     /// providers and settings from this (parent) document.
+    ///
+    /// A `srcdoc` sub-document never navigates itself: its navigations (links
+    /// without a target too, and form submissions) go to the top-level
+    /// document. Its content is the parent's own, often untrusted HTML shown in
+    /// place, and loading a page there would put one the parent never chose in
+    /// its place, looking like part of the parent. Browsers load it into the
+    /// frame.
     fn iframe_document_config(
         &self,
         node_id: NodeId,
         base_url: Option<String>,
         abort_signal: AbortSignal,
+        srcdoc: bool,
     ) -> DocumentConfig {
+        let top = self
+            .top_navigation_provider
+            .clone()
+            .unwrap_or_else(|| self.navigation_provider.clone());
+        let navigation_provider: Arc<dyn NavigationProvider> = if srcdoc {
+            top.clone()
+        } else {
+            Arc::new(IframeNavigationProvider {
+                node_id,
+                tx: self.tx.clone(),
+                shell_provider: self.shell_provider.clone(),
+            })
+        };
         DocumentConfig {
             viewport: None,
             base_url,
             ua_stylesheets: vec![UserAgentStylesheet::default_sheet()],
             net_provider: Some(self.net_provider.clone()),
-            navigation_provider: Some(Arc::new(IframeNavigationProvider {
-                node_id,
-                tx: self.tx.clone(),
-                shell_provider: self.shell_provider.clone(),
-            })),
-            top_navigation_provider: Some(
-                self.top_navigation_provider
-                    .clone()
-                    .unwrap_or_else(|| self.navigation_provider.clone()),
-            ),
+            navigation_provider: Some(navigation_provider),
+            top_navigation_provider: Some(top),
             shell_provider: Some(self.shell_provider.clone()),
             html_parser_provider: Some(self.html_parser_provider.clone()),
             font_ctx: Some(self.font_ctx.lock().unwrap().clone()),
@@ -103,15 +116,16 @@ impl BaseDocument {
     }
 
     /// Parse `html` and attach the resulting document as `node_id`'s
-    /// sub-document.
+    /// sub-document. `srcdoc`: whether `html` is the iframe's `srcdoc`.
     pub(crate) fn attach_iframe_document(
         &mut self,
         node_id: NodeId,
         html: &str,
         base_url: Option<String>,
         abort_signal: AbortSignal,
+        srcdoc: bool,
     ) {
-        let config = self.iframe_document_config(node_id, base_url, abort_signal);
+        let config = self.iframe_document_config(node_id, base_url, abort_signal, srcdoc);
         let sub_doc = self
             .html_parser_provider
             .clone()
@@ -126,7 +140,7 @@ impl BaseDocument {
     pub(crate) fn load_iframe_srcdoc(&mut self, node_id: NodeId, srcdoc: &str) {
         let signal = self.new_iframe_generation(node_id, None);
         let base_url = Some(self.url.to_string());
-        self.attach_iframe_document(node_id, srcdoc, base_url, signal);
+        self.attach_iframe_document(node_id, srcdoc, base_url, signal, true);
     }
 
     /// Start fetching HTML for an iframe from `url`. The parsed document is
@@ -187,6 +201,6 @@ impl BaseDocument {
             return;
         }
 
-        self.attach_iframe_document(node_id, html, resolved_url, signal);
+        self.attach_iframe_document(node_id, html, resolved_url, signal, false);
     }
 }

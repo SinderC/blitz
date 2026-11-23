@@ -1,7 +1,8 @@
 //! A link in an `<iframe>` whose `target` leaves the frame (`_blank`, `_top`,
 //! `_parent` in a frame of the top-level document, or any other name) navigates
-//! through the top-level document's navigation provider. A link without a target,
-//! or with `_self`, loads into the frame.
+//! through the top-level document's navigation provider. So does any link in a
+//! `srcdoc` frame, which never navigates itself; in a frame loaded from a URL, a
+//! link without a target, or with `_self`, loads into the frame.
 
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::{HtmlDocument, HtmlProvider};
@@ -89,12 +90,6 @@ fn assert_leaves_frame(target: &str) {
     assert!(navigated.fetched.is_empty(), "{target}");
 }
 
-fn assert_stays_in_frame(target: &str) {
-    let navigated = click_framed_link(target);
-    assert!(navigated.top.is_empty(), "{target}");
-    assert_eq!(navigated.fetched, [URL], "{target}");
-}
-
 fn pointer_event(x: f32, y: f32) -> BlitzPointerEvent {
     BlitzPointerEvent {
         id: BlitzPointerId::Mouse,
@@ -131,7 +126,7 @@ fn a_named_target_leaves_the_frame() {
 }
 
 #[test]
-fn no_target_or_self_stays_in_the_frame() {
-    assert_stays_in_frame("");
-    assert_stays_in_frame("target='_self'");
+fn a_srcdoc_frame_never_navigates_itself() {
+    assert_leaves_frame("");
+    assert_leaves_frame("target='_self'");
 }
